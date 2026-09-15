@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 namespace fh2::audio {
 

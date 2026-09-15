@@ -9,7 +9,7 @@
 
 namespace fh2::input {
 
-std::array<std::atomic<int32_t>, kMaxPorts>& buttonMaskAtomic() {
+std::array<std::atomic<int32_t>, InputState::kMaxPorts>& InputState::buttonMaskAtomic() {
     static std::array<std::atomic<int32_t>, kMaxPorts> masks{};
     return masks;
 }

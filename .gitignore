@@ -38,3 +38,9 @@ tools/build/
 .DS_Store
 recomp/private/*
 !recomp/private/.gitkeep
+# Ferramentas baixadas/compiladas localmente (cont.)
+tools/XexTool/
+
+# Saídas do pipeline de recompilação (regeneradas por tools/run_recomp.sh)
+recomp/config/save_restore.txt
+recomp/config/FH2_switch_tables.toml

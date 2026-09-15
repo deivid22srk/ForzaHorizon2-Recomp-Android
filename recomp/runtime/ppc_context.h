@@ -29,6 +29,18 @@
 #define PPC_EXTERN_FUNC(x) extern PPC_FUNC(x)
 #define PPC_WEAK_FUNC(x) __attribute__((weak,noinline)) PPC_FUNC(x)
 
+// --- Shims para GCC (o código gerado usa builtins exclusivos do Clang) ---
+// O CI compila com NDK/clang (caminho principal); estes shims permitem também
+// compilar o código gerado com GCC (testes locais, portabilidade).
+#if defined(__GNUC__) && !defined(__clang__)
+static inline uint64_t fh2_rotl64(uint64_t v, unsigned s) { s &= 63; return s ? (v << s) | (v >> (64 - s)) : v; }
+static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? (v << s) | (v >> (32 - s)) : v; }
+#define __builtin_rotateleft64(v, s) fh2_rotl64((v), (unsigned)(s))
+#define __builtin_rotateleft32(v, s) fh2_rotl32((v), (unsigned)(s))
+#define __builtin_assume(x) ((void)0)
+#define __builtin_debugtrap() __builtin_trap()
+#endif
+
 #define PPC_FUNC_PROLOGUE() __builtin_assume(((size_t)base & 0x1F) == 0)
 
 #ifndef PPC_LOAD_U8
@@ -696,7 +708,10 @@ inline uint64_t __rdtsc()
                  : "=r"(ret)::"memory");
     return ret;
 }
-#elif !defined(__x86_64__) && !defined(_M_X64)
+#elif defined(__GNUC__) && (defined(__x86_64__) || defined(_M_X64))
+// GCC x86-64: __rdtsc vive em <x86intrin.h> (o Clang o embute via builtins)
+#include <x86intrin.h>
+#elif !defined(__x86_64__) && !defined(_M_X64) && !defined(_MSC_VER)
 #   error "Missing implementation for __rdtsc()"
 #endif
 

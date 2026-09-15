@@ -60,6 +60,10 @@ bool VulkanBackend::onSurfaceAvailable(ANativeWindow* window, int width, int hei
     return initialized_;
 }
 
-void VulkanBackend::onSurfaceLost() { initialized_ = initialized_; }
+void VulkanBackend::onSurfaceLost() {
+    // v0.1: apenas invalida o estado provisional; a destruição de instance/device
+    // chega com o swapchain completo (docs/BACKLOG.md — runtime gráfico).
+    initialized_ = false;
+}
 
 } // namespace fh2::vulkan

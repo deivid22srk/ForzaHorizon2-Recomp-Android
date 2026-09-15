@@ -53,7 +53,7 @@ void gameMain(RuntimeState& s) {
 #if FH2_HAS_RECOMP
     // Fase atual do projeto: runtime inicializa subsistemas e aciona o guest.
     // A execução completa do guest exige a integração do kernel/IO (backlog).
-    s.ppc->run(s.gfx.get(), s.audio.get(), &s.input, s.fs, s.stopRequested, s.paused);
+    s.ppc->run(s.gfx.get(), s.audio.get(), &s.input, &s.fs, s.stopRequested, s.paused);
 #else
     // Modo shell: sem código recompilado, apenas sinaliza e aguarda stop.
     LOGI("Modo shell: código recompilado ausente (gere com tools/ ou confira o CI)");

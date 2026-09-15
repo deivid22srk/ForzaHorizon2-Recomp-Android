@@ -43,9 +43,27 @@ else()
     target_compile_definitions(fh2recomp PRIVATE FH2_HAS_RECOMP=0)
 endif()
 
+# --- Vulkan priorizado (Adreno/Turnip); GLES 3.1 permanece como fallback ---
+target_compile_definitions(fh2recomp PRIVATE FH2_ENABLE_VULKAN=1)
+
 # --- Dependências do código gerado (ppc_context usa simde para VMX em ARM64) ---
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/simde)
-    target_include_directories(fh2recomp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/simde)
+# O clone do XenonRecomp (tools/build_recomp_tools.sh) já traz o simde pinado;
+# um checkout em app/src/main/cpp/thirdparty/simde também é aceito para builds locais.
+set(SIMDE_CANDIDATES
+    ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/simde
+    ${RECOMP_DIR}/../tools/XenonRecomp/thirdparty/simde)
+set(SIMDE_DIR "")
+foreach(CAND ${SIMDE_CANDIDATES})
+    if(EXISTS ${CAND})
+        set(SIMDE_DIR ${CAND})
+        break()
+    endif()
+endforeach()
+if(SIMDE_DIR)
+    target_include_directories(fh2recomp PRIVATE ${SIMDE_DIR})
+elseif(RECOMP_COUNT GREATER 0)
+    message(FATAL_ERROR "FH2_HAS_RECOMP=1 mas simde não encontrado (ppc_context.h inclui <x86/avx.h>). "
+        "Rode tools/build_recomp_tools.sh ou clone simde em app/src/main/cpp/thirdparty/simde.")
 endif()
 
 find_library(log-lib log)
@@ -53,6 +71,7 @@ find_library(android-lib android)
 find_library(EGL-lib EGL)
 find_library(GLESv3-lib GLESv3)
 find_library(aaudio-lib aaudio)
+find_library(vulkan-lib vulkan)
 
 target_link_libraries(fh2recomp PRIVATE
-    ${log-lib} ${android-lib} ${EGL-lib} ${GLESv3-lib} ${aaudio-lib})
+    ${log-lib} ${android-lib} ${EGL-lib} ${GLESv3-lib} ${aaudio-lib} ${vulkan-lib})

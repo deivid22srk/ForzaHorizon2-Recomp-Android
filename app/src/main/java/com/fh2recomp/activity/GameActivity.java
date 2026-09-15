@@ -76,4 +76,18 @@ public class GameActivity extends AppCompatActivity {
             super.onBackPressed();
         }
     }
+
+    // --- Gamepad físico (Bluetooth/USB): despacha para GameControllerManager ---
+
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (GameControllerManager.handleKey(0, event)) return true;
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
+        if (GameControllerManager.handleMotion(0, event)) return true;
+        return super.dispatchGenericMotionEvent(event);
+    }
 }

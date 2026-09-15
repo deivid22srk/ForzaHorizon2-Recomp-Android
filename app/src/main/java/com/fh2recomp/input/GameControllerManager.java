@@ -17,24 +17,45 @@ import com.fh2recomp.nativebridge.NativeBridge;
  */
 public final class GameControllerManager {
 
-    /** Processa KeyEvents do gamepad (chamado de GameActivity.dispatchKeyEvent). */
+    /**
+     * Processa KeyEvents do gamepad (chamado de GameActivity.dispatchKeyEvent).
+     *
+     * Envia o keycode Android BRUTO ao runtime — a tradução para o formato do
+     * guest (máscara XInput-like) vive no native (input_state.cpp), que conhece
+     * AKEYCODE_BUTTON_*/AKEYCODE_DPAD_* e mantém um único mapa canônico.
+     */
     public static boolean handleKey(int port, KeyEvent e) {
+        int keyCode = e.getKeyCode();
+        if (!isGamepadKey(keyCode)) return false;
+        if (e.getAction() != KeyEvent.ACTION_DOWN && e.getAction() != KeyEvent.ACTION_UP) return true;
         boolean pressed = e.getAction() == KeyEvent.ACTION_DOWN;
-        switch (e.getKeyCode()) {
-            case KeyEvent.KEYCODE_BUTTON_A:      NativeBridge.onGamepadEvent(port, 0, pressed); return true; // A
-            case KeyEvent.KEYCODE_BUTTON_B:      NativeBridge.onGamepadEvent(port, 1, pressed); return true; // B
-            case KeyEvent.KEYCODE_BUTTON_X:      NativeBridge.onGamepadEvent(port, 2, pressed); return true; // X = freio de mão
-            case KeyEvent.KEYCODE_BUTTON_Y:      NativeBridge.onGamepadEvent(port, 3, pressed); return true; // Y = câmera
-            case KeyEvent.KEYCODE_BUTTON_L1:     NativeBridge.onGamepadEvent(port, 4, pressed); return true; // LB = câmbio -
-            case KeyEvent.KEYCODE_BUTTON_R1:     NativeBridge.onGamepadEvent(port, 5, pressed); return true; // RB = câmbio +
-            case KeyEvent.KEYCODE_BUTTON_START:  NativeBridge.onGamepadEvent(port, 6, pressed); return true; // Start
-            case KeyEvent.KEYCODE_BUTTON_SELECT: NativeBridge.onGamepadEvent(port, 7, pressed); return true; // Back
-            case KeyEvent.KEYCODE_DPAD_UP:       NativeBridge.onGamepadEvent(port, 8, pressed); return true;
-            case KeyEvent.KEYCODE_DPAD_DOWN:     NativeBridge.onGamepadEvent(port, 9, pressed); return true;
-            case KeyEvent.KEYCODE_DPAD_LEFT:     NativeBridge.onGamepadEvent(port, 10, pressed); return true;
-            case KeyEvent.KEYCODE_DPAD_RIGHT:    NativeBridge.onGamepadEvent(port, 11, pressed); return true;
+        boolean repeat = pressed && e.getRepeatCount() > 0;
+        if (!repeat) NativeBridge.onGamepadEvent(port, keyCode, pressed);
+        return true;
+    }
+
+    private static boolean isGamepadKey(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_BUTTON_A:
+            case KeyEvent.KEYCODE_BUTTON_B:
+            case KeyEvent.KEYCODE_BUTTON_X:
+            case KeyEvent.KEYCODE_BUTTON_Y:
+            case KeyEvent.KEYCODE_BUTTON_L1:
+            case KeyEvent.KEYCODE_BUTTON_R1:
+            case KeyEvent.KEYCODE_BUTTON_L2:
+            case KeyEvent.KEYCODE_BUTTON_R2:
+            case KeyEvent.KEYCODE_BUTTON_START:
+            case KeyEvent.KEYCODE_BUTTON_SELECT:
+            case KeyEvent.KEYCODE_BUTTON_THUMBL:
+            case KeyEvent.KEYCODE_BUTTON_THUMBR:
+            case KeyEvent.KEYCODE_DPAD_UP:
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                return true;
+            default:
+                return false;
         }
-        return false;
     }
 
     /** Processa MotionEvents do gamepad (chamado de GameActivity.dispatchGenericMotionEvent). */
