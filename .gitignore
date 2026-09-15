@@ -1,0 +1,40 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# NDK / CMake
+*.o
+*.so
+!app/src/main/libs/**/*.so
+
+# CONTEUDO PROTEGIDO DO JOGO — NUNCA COMMITAR
+*.xex
+*.xexp
+*.xex2
+*.iso
+*.xenon
+default.xex
+default_dec.xex
+default_patched.xex
+recomp/generated/
+recomp/private/
+
+# Ferramentas baixadas/compiladas localmente
+tools/XenonRecomp/
+tools/xextool/
+tools/build/
+
+# Logs e temporários
+*.log
+.DS_Store
+recomp/private/*
+!recomp/private/.gitkeep

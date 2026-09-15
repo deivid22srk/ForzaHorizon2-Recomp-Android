@@ -1,0 +1,22 @@
+// Root build.gradle — ForzaHorizon2-Recomp-Android
+// Projeto homebrew/educacional. Nenhum asset do jogo é distribuído neste repositório.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.7.2'
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}
