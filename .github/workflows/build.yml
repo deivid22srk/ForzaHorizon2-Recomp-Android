@@ -26,9 +26,10 @@ jobs:
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
 
       - name: Instalar NDK e CMake
-        run: | 
-          sdkmanager --install "ndk;27.0.12077973" "cmake;3.22.1"
-          sdkmanager --list_installed | head -20
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKM" --install "ndk;27.0.12077973" "cmake;3.22.1"
+          "$SDKM" --list_installed | head -20
 
       - name: Cache Gradle
         uses: actions/cache@v4
