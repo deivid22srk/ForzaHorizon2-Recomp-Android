@@ -25,6 +25,18 @@ struct XexImageInfo {
     uint32_t base = 0;        // endereço guest da imagem (FH2: 0x82000000)
     uint32_t entryPoint = 0;  // entry point (FH2: 0x82BF2CD0)
     uint32_t imageSize = 0;   // bytes da imagem decodificada
+    uint32_t titleId = 0;     // XEX_HEADER_EXECUTION_INFO
+    uint32_t defaultStackSize = 0; // XEX_HEADER_DEFAULT_STACK_SIZE
+    uint32_t defaultHeapSize = 0;  // XEX_HEADER_DEFAULT_HEAP_SIZE
+    // XEX_HEADER_TLS_INFO (copiado para cada thread guest; r13 = base)
+    uint32_t tlsNumberOfSlots = 0;
+    uint32_t tlsSlotSize = 0;
+    uint32_t tlsBytes = 0;        // numberOfBytes (bloco por thread)
+    uint32_t tlsDataStart = 0;    // VA do template de init (na imagem)
+    uint32_t tlsRawDataEnd = 0;
+    uint32_t tlsDataEnd = 0;
+    uint32_t tlsIndexAddr = 0;
+    uint32_t tlsBaseAddr = 0;     // VA da variável base do CRT
 };
 
 /**

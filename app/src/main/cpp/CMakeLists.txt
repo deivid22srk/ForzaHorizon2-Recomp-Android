@@ -23,7 +23,11 @@ add_library(fh2recomp SHARED
     runtime/input/input_state.cpp
     runtime/fs/fs_provider.cpp
     runtime/ppc/ppc_runtime.cpp
-    runtime/ppc/kernel_hle.cpp)
+    runtime/ppc/kernel_hle.cpp
+    runtime/ppc/kernel_state.cpp
+    runtime/ppc/guest_alloc.cpp
+    runtime/ppc/guest_entry.cpp
+    runtime/ppc/kernel_real.cpp)
 target_include_directories(fh2recomp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${RECOMP_DIR}/runtime)

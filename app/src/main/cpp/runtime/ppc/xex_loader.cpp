@@ -24,6 +24,70 @@
 
 namespace fh2::ppc {
 
+namespace {
+
+inline uint32_t be32(const uint8_t* p) {
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+/** Percorre os cabeçalhos opcionais do XEX2 (área NÃO encriptada) e extrai
+ *  TLS / stack / heap / title id — os metadados de que o runtime precisa
+ *  para preparar threads guest de verdade. */
+void parseOptionalHeaders(const uint8_t* data, size_t size, XexImageInfo& out) {
+    if (size < 0x18) return;
+    const uint32_t headerCount = be32(data + 0x14);
+    const uint8_t* opt = data + 0x18;
+    const size_t avail = size - 0x18;
+    size_t off = 0;
+    for (uint32_t i = 0; i < headerCount && off + 8 <= avail; ++i) {
+        const uint32_t key = be32(opt + off);
+        const uint32_t val = be32(opt + off + 4);
+        const size_t body = off + 8;
+        switch (key) {
+        case 0x00020104: { // XEX_HEADER_TLS_INFO → val = offset do corpo
+            if (val + 32 <= size) {
+                const uint8_t* t = data + val;
+                out.tlsNumberOfSlots = be32(t);
+                out.tlsSlotSize = be32(t + 4);
+                out.tlsBytes = be32(t + 8);
+                out.tlsDataStart = be32(t + 12);
+                out.tlsRawDataEnd = be32(t + 16);
+                out.tlsDataEnd = be32(t + 20);
+                out.tlsIndexAddr = be32(t + 24);
+                out.tlsBaseAddr = be32(t + 28);
+            }
+            break;
+        }
+        case 0x00020200: // XEX_HEADER_DEFAULT_STACK_SIZE (valor inline)
+            out.defaultStackSize = val;
+            break;
+        case 0x00020401: // XEX_HEADER_DEFAULT_HEAP_SIZE (valor inline)
+            out.defaultHeapSize = val;
+            break;
+        case 0x00040006: { // XEX_HEADER_EXECUTION_INFO → offset do corpo
+            if (val + 0x14 <= size) {
+                // MediaID[0x10] e então TitleID (BE)
+                out.titleId = be32(data + val + 0x10);
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        // tamanho do corpo: chaves ≥ 0x0000FF00 carregam length no 1º u32
+        if (key >= 0x0000FF00) {
+            if (body + 4 > avail) break;
+            const uint32_t len = be32(opt + body);
+            off = body + 4 + len;
+        } else {
+            off = body;
+        }
+    }
+}
+
+} // namespace
+
 bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
                   XexImageInfo& out, std::string& error) {
     out = {};
@@ -76,9 +140,15 @@ bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
     out.base = static_cast<uint32_t>(image.base);
     out.entryPoint = static_cast<uint32_t>(image.entry_point);
     out.imageSize = image.size;
+    parseOptionalHeaders(fileData.data(), fileData.size(), out);
     __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
-                        "default.xex decodificado: base=0x%08X entry=0x%08X size=%u bytes",
-                        out.base, out.entryPoint, out.imageSize);
+                        "default.xex decodificado: base=0x%08X entry=0x%08X "
+                        "size=%u bytes titleId=0x%08X stack=%u heap=%u "
+                        "TLS=%u bytes (slots=%u x %u, data=0x%08X..0x%08X)",
+                        out.base, out.entryPoint, out.imageSize, out.titleId,
+                        out.defaultStackSize, out.defaultHeapSize,
+                        out.tlsBytes, out.tlsNumberOfSlots, out.tlsSlotSize,
+                        out.tlsDataStart, out.tlsDataEnd);
     return true;
 }
 

@@ -28,6 +28,7 @@
 #include "runtime/input/input_state.h"
 #include "runtime/fs/fs_provider.h"
 #include "runtime/ppc/ppc_runtime.h"
+#include "runtime/ppc/kernel_state.h"
 
 #define LOG_TAG "FH2Recomp"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -170,9 +171,19 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeStop(JNIEnv*, jobject) {
         if (!s.booted) return;
         s.stopRequested = true;
     }
+    // Acorda todos os waits/delays HLE — as threads guest fazem unwind.
+    fh2::kern::requestStop();
     // join fora do lock: a thread do jogo não pega o lifecycleMutex
     if (s.mainThread.joinable()) s.mainThread.join();
     std::lock_guard<std::mutex> lock(s.lifecycleMutex);
+    // Se ainda há threads guest vivas (ex.: spin sem HLE), a memória guest
+    // NÃO pode ser desmapeada — retém até o fim do processo (decisão real,
+    // documentada em DECISIONS D24).
+    if (s.ppc && s.ppc->guestStarted() && fh2::kern::joinAll(2000) > 0) {
+        LOGE("stop: threads guest ainda vivas — memória guest retida "
+             "(leak controlado, evita SIGSEGV)");
+        s.ppc.release();
+    }
     if (s.window) { ANativeWindow_release(s.window); s.window = nullptr; }
     s.gfx.reset();
     s.audio.reset();

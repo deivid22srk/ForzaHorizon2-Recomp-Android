@@ -30,10 +30,21 @@ override via FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH.
 
 ## Kernel/IO (runtime)
 
-- [ ] **Imports do XEX**: resolver a tabela de imports (xam/xboxkrnl) para
-      stubs nativos — pré-requisito para chamar o entry point do guest
-- [ ] **Chamada do entry**: `0x82BF2CD0` via function table (perfeito hash do
-      ppc_func_mapping.cpp já gerado)
+- [x] **Imports do XEX**: 388 imports despachados — 75 com SEMÂNTICA REAL
+      (heap/janela virtual, tempo, threads guest reais, events/semaphores/
+      mutants, KeTls*, critical sections, printf/DbgPrint reais sobre memória
+      guest, XamInputGetState real, Mm* físicas), 26 com falha REAL do estado
+      (FS/perfis/rede ainda indisponíveis), 287 stubs log-once (2026-09-16)
+- [x] **Chamada do entry**: `0x82BF2CD0` chamado de verdade (guest_entry.cpp):
+      tabela mágica de 128.708 funções populada na memória guest, PPCContext
+      com stack 16 MB + TLS do XEX_HEADER_TLS_INFO, CRT `_xstart` executa
+      (2026-09-16). Boot REAL validado no host (hostrun_boot.sh — o C++
+      recompilado é portável) e no device na próxima build
+- [ ] **Filesystem real**: NtCreateFile/NtReadFile/… sobre o FsProvider (fd
+      SAF direto) — o guest hoje recebe STATUS_OBJECT_NAME_NOT_FOUND (falha
+      honesta); próximo passo natural após o boot
+- [ ] **VdSwap/GPU**: VdSwap e VdInitializeRingBuffer são os pontos de
+      entrada do caminho gráfico real (issue #17)
 - [ ] **MMIO**: XMA decoder (áudio do jogo usa XMA), GPU pushbuffer
 - [ ] **Tradução Xenos→Vulkan/GLES**: vertex/fragment shaders Xenos
       (microcode) → SPIR-V/GLSL; pipeline cache persistente em disco
@@ -41,10 +52,13 @@ override via FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH.
       com streaming constante)
 - [ ] **Setjmp/longjmp**: identificar endereços (issue #15)
 - [ ] **Jump tables**: detecção para o padrão do compilador do FH2 (issue #14)
+- [ ] **Threads**: preempção de guest sem pontos de HLE (spin) — hoje o stop
+      retém a memória guest (leak controlado, D24) em vez de matar no meio
 
 ## Infra
 
-- [ ] Assinatura de release com keystore via secrets (KEYSTORE_BASE64 etc.)
+- [x] Assinatura de release com keystore via secrets (KEYSTORE_BASE64 etc.)
+- [ ] Boot test do host no CI (hostrun_boot.sh como gate executável)
 - [ ] Cache de artefato do código gerado (zip por hash do XEX) para acelerar
       builds que não alteram o binário
 - [ ] Testes unitários do runtime de input (snapshot/máscara atômica)

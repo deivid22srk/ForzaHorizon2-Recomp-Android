@@ -202,3 +202,59 @@ patchadas (exatamente o número de stubs HLE — issue #16) + 401 variáveis
 intactas. Execução do entry point continua bloqueada por kernel/IO (BACKLOG) —
 sem promessa falsa: o boot agora chega ao frame loop com a imagem do jogo
 carregada na memória guest.
+
+### D24 — Execução REAL do guest: tabela mágica, kernel HLE com semântica real, threads guest (issue #16)
+Relato do device (moto g34 5G, log AhvQ1HSc): "tela preta, nada acontece".
+O log mostra boot íntegro até `execução aguarda kernel/IO (issue #16)` — o
+runtime carregava a imagem e então apenas dormia no frame loop: o entry point
+do jogo NUNCA era chamado (`TODO(backlog #16)` em PpcRuntime::run). Causa raiz
+honestamente documentada, agora resolvida com o núcleo de execução real:
+
+1. **Mapa de memória corrigido (bug real)**: o código gerado faz chamadas
+   indiretas via `PPC_LOOKUP_FUNC(base, addr) = *(PPCFunc**)(base +
+   IMAGE_BASE + IMAGE_SIZE + (addr-CODE_BASE)*2)` — a "tabela mágica" ocupa
+   `PPC_CODE_SIZE*2` ≈ 30 MB logo APÓS a imagem, mas a reserva anterior tinha
+   só 16 MB de margem: a primeira chamada virtual/por-ponteiro leria fora do
+   mmap → SIGSEGV. Novo mapa: imagem (24 MB) → tabela mágica (~30 MB) → heap
+   guest 96 MB @0x86000000 → janela virtual 192 MB @0x8C000000 → stack
+   principal 16 MB; total ~2,41 GB (MAP_NORESERVE — commit só no uso real).
+   A tabela é populada de `PPCFuncMappings[]` (128.708 funções + imports) no
+   initialize, antes de qualquer execução.
+2. **Chamada real do entry**: guest_entry.cpp monta o PPCContext (r1 = stack
+   guest 16 MB alinhada, r13 = bloco TLS copiado do XEX_HEADER_TLS_INFO,
+   msr 0x200A000) e chama a função do entry 0x82BF2CD0 (`_xstart`, o CRT do
+   jogo). O código do jogo executa de verdade.
+3. **Kernel HLE com semântica real** (kernel_state/kernel_real + gerador
+   atualizado): 75 imports delegam para implementações reais — heap/janela
+   virtual (ExAllocatePool*, NtAllocate/FreeVirtualMemory,
+   MmAllocatePhysicalMemoryEx/Free/GetPhysicalAddress, kernel stacks),
+   tempo real (KeQuerySystemTime, KeQueryPerformanceFrequency 50 MHz),
+   espera real com unwind no stop (KeDelayExecutionThread), sincronização
+   real sobre mutex+condvar do host (events/semaphores/mutants via Nt*/Ke*,
+   critical sections Rtl*), threads guest REAIS (ExCreateThread cria
+   std::thread do host suspensa; KeResumeThread libera; cada thread tem
+   PPCContext, stack própria e TLS próprio; ExTerminateThread sai via
+   longjmp limpo), KeTls* (64 slots reais), printf/DbgPrint REAIS lendo a
+   memória guest (ABI Xenon: r4..r10 + f1..f13, va_list com slots de 8
+   bytes) — os logs de boot do JOGO aparecem no logcat (FH2/DBG),
+   input real (XamInputGetState reflete HUD touch + gamepads com o layout
+   XINPUT_STATE big-endian), conversões Rtl de tempo/strings reais.
+   Outros 26 imports retornam status de FALHA REAL do estado do sistema
+   (ex.: NtCreateFile → STATUS_OBJECT_NAME_NOT_FOUND, perfis offline →
+   0x80320098): "sucesso vazio" derrubaria o guest com NULL/garbage — a
+   falha honesta deixa o guest seguir pelo caminho de erro que ele já tem.
+   Os 287 restantes continuam stubs log-once (backlog #16/#17/#18/#19).
+4. **Metadados do XEX**: xex_loader agora percorre os headers opcionais e
+   extrai TLS_INFO (bloco por thread), DEFAULT_STACK/HEAP_SIZE e EXECUTION_INFO
+   (title id real do jogo — XamGetCurrentTitleId retorna o valor do XEX).
+5. **Stop/unwind**: requestStop acorda todos os waits/delays; as threads
+   guest fazem longjmp para o ponto de entrada do corpo e terminam limpas;
+   se uma thread seguir viva (spin sem HLE), a memória guest é RETIDA até o
+   fim do processo (leak controlado documentado) em vez de munmap sob
+   execução — SIGSEGV pós-stop é pior que reter páginas NORESERVE.
+6. **Validação**: hostcheck (sintaxe dos TUs do runtime nos modos
+   FH2_HAS_RECOMP 0/1 + amostra estratificada de 70 TUs gerados) e um BOOT
+   REAL NO HOST (hostrun_boot.sh — o C++ recompilado é portável): compila os
+   506 TUs gerados com g++ e executa o mesmo caminho do app (loader → tabela
+   mágica → entry), medindo até onde o boot do jogo avança e quais HLE são
+   acionados — resultado registrado no BACKLOG/commit.

@@ -1,31 +1,31 @@
-// kernel_hle.cpp — stubs HLE dos imports de xboxkrnl.exe/xam.xex usados pelo FH2
+// kernel_hle.cpp — despacho HLE dos imports de xboxkrnl.exe/xam.xex (FH2)
 //
 // GERADO por tools/gen_kernel_hle.py — 388 símbolos exigidos por
-// ppc_func_mapping.cpp (ld.lld para no limite de 20 erros, mas o conjunto
-// completo vem da análise do mapping). Cada stub: log-once + retorno padrão
-// de sucesso (NTSTATUS 0). Semântica real = issue #16. NÃO EDITAR À MÃO.
+// ppc_func_mapping.cpp. Três caminhos:
+//   REAL  (75): delega para fh2::kern::real_* com semântica real
+//         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
+//   FAIL  (26): retorna status de falha REAL do estado do sistema
+//   stub  (287): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+// NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
 #include <android/log.h>
 #include "ppc_config.h"
 #include "ppc_context.h"
+#include "runtime/ppc/kernel_real.h"
 
 #define HLOG(...) __android_log_print(ANDROID_LOG_WARN, "FH2/HLE", __VA_ARGS__)
 
 #define FH2_HLE_ONCE(name, note) do { static bool _logged_##name = false; if (!_logged_##name) { _logged_##name = true; HLOG("HLE stub: %s — %s", #name, note); } } while (0)
 
-// DbgBreakPoint: semântica real pendente (issue #16)
+// DbgBreakPoint: semântica REAL (kernel_real.cpp)
 void __imp__DbgBreakPoint(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(DbgBreakPoint, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_DbgBreakPoint(ctx, base);
 }
 
-// DbgPrint: debug output do guest
+// DbgPrint: semântica REAL (kernel_real.cpp)
 void __imp__DbgPrint(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(DbgPrint, "debug output do guest");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_DbgPrint(ctx, base);
 }
 
 // EtxProducerLog: semântica real pendente (issue #16)
@@ -49,32 +49,24 @@ void __imp__EtxProducerUnregister(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// ExAllocatePool: retorna NULL até o allocator HLE (issue #16)
+// ExAllocatePool: semântica REAL (kernel_real.cpp)
 void __imp__ExAllocatePool(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(ExAllocatePool, "retorna NULL até o allocator HLE (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ExAllocatePool(ctx, base);
 }
 
-// ExAllocatePoolTypeWithTag: retorna NULL até o allocator HLE (issue #16)
+// ExAllocatePoolTypeWithTag: semântica REAL (kernel_real.cpp)
 void __imp__ExAllocatePoolTypeWithTag(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(ExAllocatePoolTypeWithTag, "retorna NULL até o allocator HLE (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ExAllocatePoolTypeWithTag(ctx, base);
 }
 
-// ExCreateThread: semântica real pendente (issue #16)
+// ExCreateThread: semântica REAL (kernel_real.cpp)
 void __imp__ExCreateThread(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(ExCreateThread, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ExCreateThread(ctx, base);
 }
 
-// ExFreePool: semântica real pendente (issue #16)
+// ExFreePool: semântica REAL (kernel_real.cpp)
 void __imp__ExFreePool(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(ExFreePool, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ExFreePool(ctx, base);
 }
 
 // ExGetXConfigSetting: semântica real pendente (issue #16)
@@ -91,11 +83,9 @@ void __imp__ExRegisterTitleTerminateNotification(PPCContext& ctx, uint8_t* base)
     ctx.r3.u32 = 0;
 }
 
-// ExTerminateThread: semântica real pendente (issue #16)
+// ExTerminateThread: semântica REAL (kernel_real.cpp)
 void __imp__ExTerminateThread(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(ExTerminateThread, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ExTerminateThread(ctx, base);
 }
 
 // FscSetCacheElementCount: semântica real pendente (issue #16)
@@ -105,11 +95,9 @@ void __imp__FscSetCacheElementCount(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// HalReturnToFirmware: guest pediu reboot
+// HalReturnToFirmware: semântica REAL (kernel_real.cpp)
 void __imp__HalReturnToFirmware(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    HLOG("HLE FATAL: %s — guest pediu reboot", "HalReturnToFirmware");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_HalReturnToFirmware(ctx, base);
 }
 
 // InterlockedFlushSList: semântica real pendente (issue #16)
@@ -196,25 +184,19 @@ void __imp__KeAcquireSpinLockAtRaisedIrql(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeBugCheck: caminho fatal do guest
+// KeBugCheck: semântica REAL (kernel_real.cpp)
 void __imp__KeBugCheck(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    HLOG("HLE FATAL: %s — caminho fatal do guest", "KeBugCheck");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeBugCheck(ctx, base);
 }
 
-// KeBugCheckEx: caminho fatal do guest
+// KeBugCheckEx: semântica REAL (kernel_real.cpp)
 void __imp__KeBugCheckEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    HLOG("HLE FATAL: %s — caminho fatal do guest", "KeBugCheckEx");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeBugCheckEx(ctx, base);
 }
 
-// KeDelayExecutionThread: retorna imediatamente (sync HLE pendente)
+// KeDelayExecutionThread: semântica REAL (kernel_real.cpp)
 void __imp__KeDelayExecutionThread(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeDelayExecutionThread, "retorna imediatamente (sync HLE pendente)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeDelayExecutionThread(ctx, base);
 }
 
 // KeEnterCriticalRegion: semântica real pendente (issue #16)
@@ -224,11 +206,9 @@ void __imp__KeEnterCriticalRegion(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeGetCurrentProcessType: semântica real pendente (issue #16)
+// KeGetCurrentProcessType: semântica REAL (kernel_real.cpp)
 void __imp__KeGetCurrentProcessType(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeGetCurrentProcessType, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeGetCurrentProcessType(ctx, base);
 }
 
 // KeInitializeDpc: semântica real pendente (issue #16)
@@ -238,11 +218,9 @@ void __imp__KeInitializeDpc(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeInitializeMutant: semântica real pendente (issue #16)
+// KeInitializeMutant: semântica REAL (kernel_real.cpp)
 void __imp__KeInitializeMutant(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeInitializeMutant, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeInitializeMutant(ctx, base);
 }
 
 // KeInsertQueueDpc: semântica real pendente (issue #16)
@@ -273,25 +251,19 @@ void __imp__KeQueryBasePriorityThread(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeQueryPerformanceFrequency: semântica real pendente (issue #16)
+// KeQueryPerformanceFrequency: semântica REAL (kernel_real.cpp)
 void __imp__KeQueryPerformanceFrequency(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeQueryPerformanceFrequency, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeQueryPerformanceFrequency(ctx, base);
 }
 
-// KeQuerySystemTime: semântica real pendente (issue #16)
+// KeQuerySystemTime: semântica REAL (kernel_real.cpp)
 void __imp__KeQuerySystemTime(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeQuerySystemTime, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeQuerySystemTime(ctx, base);
 }
 
-// KeReleaseMutant: semântica real pendente (issue #16)
+// KeReleaseMutant: semântica REAL (kernel_real.cpp)
 void __imp__KeReleaseMutant(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeReleaseMutant, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeReleaseMutant(ctx, base);
 }
 
 // KeReleaseSpinLockFromRaisedIrql: semântica real pendente (issue #16)
@@ -301,11 +273,9 @@ void __imp__KeReleaseSpinLockFromRaisedIrql(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeResetEvent: semântica real pendente (issue #16)
+// KeResetEvent: semântica REAL (kernel_real.cpp)
 void __imp__KeResetEvent(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeResetEvent, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeResetEvent(ctx, base);
 }
 
 // KeRestoreFloatingPointState: semântica real pendente (issue #16)
@@ -315,11 +285,9 @@ void __imp__KeRestoreFloatingPointState(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeResumeThread: semântica real pendente (issue #16)
+// KeResumeThread: semântica REAL (kernel_real.cpp)
 void __imp__KeResumeThread(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeResumeThread, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeResumeThread(ctx, base);
 }
 
 // KeSaveFloatingPointState: semântica real pendente (issue #16)
@@ -343,11 +311,9 @@ void __imp__KeSetBasePriorityThread(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeSetCurrentProcessType: semântica real pendente (issue #16)
+// KeSetCurrentProcessType: semântica REAL (kernel_real.cpp)
 void __imp__KeSetCurrentProcessType(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeSetCurrentProcessType, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeSetCurrentProcessType(ctx, base);
 }
 
 // KeSetCurrentStackPointers: semântica real pendente (issue #16)
@@ -357,39 +323,29 @@ void __imp__KeSetCurrentStackPointers(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeSetEvent: semântica real pendente (issue #16)
+// KeSetEvent: semântica REAL (kernel_real.cpp)
 void __imp__KeSetEvent(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeSetEvent, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeSetEvent(ctx, base);
 }
 
-// KeTlsAlloc: semântica real pendente (issue #16)
+// KeTlsAlloc: semântica REAL (kernel_real.cpp)
 void __imp__KeTlsAlloc(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeTlsAlloc, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeTlsAlloc(ctx, base);
 }
 
-// KeTlsFree: semântica real pendente (issue #16)
+// KeTlsFree: semântica REAL (kernel_real.cpp)
 void __imp__KeTlsFree(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeTlsFree, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeTlsFree(ctx, base);
 }
 
-// KeTlsGetValue: semântica real pendente (issue #16)
+// KeTlsGetValue: semântica REAL (kernel_real.cpp)
 void __imp__KeTlsGetValue(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeTlsGetValue, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeTlsGetValue(ctx, base);
 }
 
-// KeTlsSetValue: semântica real pendente (issue #16)
+// KeTlsSetValue: semântica REAL (kernel_real.cpp)
 void __imp__KeTlsSetValue(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeTlsSetValue, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeTlsSetValue(ctx, base);
 }
 
 // KeUnlockL2: semântica real pendente (issue #16)
@@ -399,18 +355,14 @@ void __imp__KeUnlockL2(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// KeWaitForMultipleObjects: retorna imediatamente (sync HLE pendente)
+// KeWaitForMultipleObjects: semântica REAL (kernel_real.cpp)
 void __imp__KeWaitForMultipleObjects(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeWaitForMultipleObjects, "retorna imediatamente (sync HLE pendente)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeWaitForMultipleObjects(ctx, base);
 }
 
-// KeWaitForSingleObject: semântica real pendente (issue #16)
+// KeWaitForSingleObject: semântica REAL (kernel_real.cpp)
 void __imp__KeWaitForSingleObject(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(KeWaitForSingleObject, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_KeWaitForSingleObject(ctx, base);
 }
 
 // KfAcquireSpinLock: semântica real pendente (issue #16)
@@ -455,39 +407,29 @@ void __imp__LDIDestroyDecompression(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// MmAllocatePhysicalMemoryEx: semântica real pendente (issue #16)
+// MmAllocatePhysicalMemoryEx: semântica REAL (kernel_real.cpp)
 void __imp__MmAllocatePhysicalMemoryEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmAllocatePhysicalMemoryEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmAllocatePhysicalMemoryEx(ctx, base);
 }
 
-// MmCreateKernelStack: semântica real pendente (issue #16)
+// MmCreateKernelStack: semântica REAL (kernel_real.cpp)
 void __imp__MmCreateKernelStack(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmCreateKernelStack, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmCreateKernelStack(ctx, base);
 }
 
-// MmDeleteKernelStack: semântica real pendente (issue #16)
+// MmDeleteKernelStack: semântica REAL (kernel_real.cpp)
 void __imp__MmDeleteKernelStack(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmDeleteKernelStack, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmDeleteKernelStack(ctx, base);
 }
 
-// MmFreePhysicalMemory: semântica real pendente (issue #16)
+// MmFreePhysicalMemory: semântica REAL (kernel_real.cpp)
 void __imp__MmFreePhysicalMemory(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmFreePhysicalMemory, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmFreePhysicalMemory(ctx, base);
 }
 
-// MmGetPhysicalAddress: semântica real pendente (issue #16)
+// MmGetPhysicalAddress: semântica REAL (kernel_real.cpp)
 void __imp__MmGetPhysicalAddress(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmGetPhysicalAddress, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmGetPhysicalAddress(ctx, base);
 }
 
 // MmMapIoSpace: semântica real pendente (issue #16)
@@ -504,11 +446,9 @@ void __imp__MmQueryAddressProtect(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// MmQueryAllocationSize: semântica real pendente (issue #16)
+// MmQueryAllocationSize: semântica REAL (kernel_real.cpp)
 void __imp__MmQueryAllocationSize(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(MmQueryAllocationSize, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmQueryAllocationSize(ctx, base);
 }
 
 // MmQueryStatistics: semântica real pendente (issue #16)
@@ -623,11 +563,11 @@ void __imp__NetDll_WSASetLastError(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NetDll_WSAStartup: semântica real pendente (issue #16)
+// NetDll_WSAStartup: falha REAL — rede real pendente (issue #19)
 void __imp__NetDll_WSAStartup(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NetDll_WSAStartup, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NetDll_WSAStartup, "rede real pendente (issue #19)");
+    ctx.r3.u32 = 0x800704CFu;
 }
 
 // NetDll_WSAWaitForMultipleEvents: semântica real pendente (issue #16)
@@ -910,18 +850,16 @@ void __imp__NetDll_socket(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtAllocateVirtualMemory: semântica real pendente (issue #16)
+// NtAllocateVirtualMemory: semântica REAL (kernel_real.cpp)
 void __imp__NtAllocateVirtualMemory(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtAllocateVirtualMemory, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtAllocateVirtualMemory(ctx, base);
 }
 
-// NtCancelIoFile: semântica real pendente (issue #16)
+// NtCancelIoFile: falha REAL — IO pendente
 void __imp__NtCancelIoFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtCancelIoFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtCancelIoFile, "IO pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
 // NtCancelTimer: semântica real pendente (issue #16)
@@ -931,46 +869,36 @@ void __imp__NtCancelTimer(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtClearEvent: semântica real pendente (issue #16)
+// NtClearEvent: semântica REAL (kernel_real.cpp)
 void __imp__NtClearEvent(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtClearEvent, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtClearEvent(ctx, base);
 }
 
-// NtClose: semântica real pendente (issue #16)
+// NtClose: semântica REAL (kernel_real.cpp)
 void __imp__NtClose(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtClose, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtClose(ctx, base);
 }
 
-// NtCreateEvent: semântica real pendente (issue #16)
+// NtCreateEvent: semântica REAL (kernel_real.cpp)
 void __imp__NtCreateEvent(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtCreateEvent, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtCreateEvent(ctx, base);
 }
 
-// NtCreateFile: semântica real pendente (issue #16)
+// NtCreateFile: falha REAL — STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente
 void __imp__NtCreateFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtCreateFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtCreateFile, "STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente");
+    ctx.r3.u32 = 0xC0000034u;
 }
 
-// NtCreateMutant: semântica real pendente (issue #16)
+// NtCreateMutant: semântica REAL (kernel_real.cpp)
 void __imp__NtCreateMutant(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtCreateMutant, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtCreateMutant(ctx, base);
 }
 
-// NtCreateSemaphore: semântica real pendente (issue #16)
+// NtCreateSemaphore: semântica REAL (kernel_real.cpp)
 void __imp__NtCreateSemaphore(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtCreateSemaphore, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtCreateSemaphore(ctx, base);
 }
 
 // NtCreateTimer: semântica real pendente (issue #16)
@@ -980,11 +908,11 @@ void __imp__NtCreateTimer(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtDeviceIoControlFile: semântica real pendente (issue #16)
+// NtDeviceIoControlFile: falha REAL — IOCTL pendente
 void __imp__NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtDeviceIoControlFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtDeviceIoControlFile, "IOCTL pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
 // NtDuplicateObject: semântica real pendente (issue #16)
@@ -994,46 +922,44 @@ void __imp__NtDuplicateObject(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtFlushBuffersFile: semântica real pendente (issue #16)
+// NtFlushBuffersFile: falha REAL — FS pendente
 void __imp__NtFlushBuffersFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtFlushBuffersFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtFlushBuffersFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtFreeVirtualMemory: semântica real pendente (issue #16)
+// NtFreeVirtualMemory: semântica REAL (kernel_real.cpp)
 void __imp__NtFreeVirtualMemory(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtFreeVirtualMemory, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtFreeVirtualMemory(ctx, base);
 }
 
-// NtOpenFile: semântica real pendente (issue #16)
+// NtOpenFile: falha REAL — STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente
 void __imp__NtOpenFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtOpenFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtOpenFile, "STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente");
+    ctx.r3.u32 = 0xC0000034u;
 }
 
-// NtQueryDirectoryFile: semântica real pendente (issue #16)
+// NtQueryDirectoryFile: falha REAL — FS pendente
 void __imp__NtQueryDirectoryFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtQueryDirectoryFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtQueryDirectoryFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtQueryFullAttributesFile: semântica real pendente (issue #16)
+// NtQueryFullAttributesFile: falha REAL — FS pendente
 void __imp__NtQueryFullAttributesFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtQueryFullAttributesFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtQueryFullAttributesFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000034u;
 }
 
-// NtQueryInformationFile: semântica real pendente (issue #16)
+// NtQueryInformationFile: falha REAL — FS pendente
 void __imp__NtQueryInformationFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtQueryInformationFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtQueryInformationFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
 // NtQueryVirtualMemory: semântica real pendente (issue #16)
@@ -1043,39 +969,35 @@ void __imp__NtQueryVirtualMemory(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtQueryVolumeInformationFile: semântica real pendente (issue #16)
+// NtQueryVolumeInformationFile: falha REAL — FS pendente
 void __imp__NtQueryVolumeInformationFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtQueryVolumeInformationFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtQueryVolumeInformationFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtReadFile: semântica real pendente (issue #16)
+// NtReadFile: falha REAL — sem handle real (FS pendente)
 void __imp__NtReadFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtReadFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtReadFile, "sem handle real (FS pendente)");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtReadFileScatter: semântica real pendente (issue #16)
+// NtReadFileScatter: falha REAL — FS pendente
 void __imp__NtReadFileScatter(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtReadFileScatter, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtReadFileScatter, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtReleaseMutant: semântica real pendente (issue #16)
+// NtReleaseMutant: semântica REAL (kernel_real.cpp)
 void __imp__NtReleaseMutant(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtReleaseMutant, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtReleaseMutant(ctx, base);
 }
 
-// NtReleaseSemaphore: semântica real pendente (issue #16)
+// NtReleaseSemaphore: semântica REAL (kernel_real.cpp)
 void __imp__NtReleaseSemaphore(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtReleaseSemaphore, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtReleaseSemaphore(ctx, base);
 }
 
 // NtResumeThread: semântica real pendente (issue #16)
@@ -1085,18 +1007,16 @@ void __imp__NtResumeThread(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtSetEvent: semântica real pendente (issue #16)
+// NtSetEvent: semântica REAL (kernel_real.cpp)
 void __imp__NtSetEvent(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtSetEvent, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtSetEvent(ctx, base);
 }
 
-// NtSetInformationFile: semântica real pendente (issue #16)
+// NtSetInformationFile: falha REAL — FS pendente
 void __imp__NtSetInformationFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtSetInformationFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtSetInformationFile, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
 // NtSetTimerEx: semântica real pendente (issue #16)
@@ -1106,46 +1026,38 @@ void __imp__NtSetTimerEx(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// NtSignalAndWaitForSingleObjectEx: semântica real pendente (issue #16)
+// NtSignalAndWaitForSingleObjectEx: semântica REAL (kernel_real.cpp)
 void __imp__NtSignalAndWaitForSingleObjectEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtSignalAndWaitForSingleObjectEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtSignalAndWaitForSingleObjectEx(ctx, base);
 }
 
-// NtWaitForMultipleObjectsEx: semântica real pendente (issue #16)
+// NtWaitForMultipleObjectsEx: semântica REAL (kernel_real.cpp)
 void __imp__NtWaitForMultipleObjectsEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtWaitForMultipleObjectsEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtWaitForMultipleObjectsEx(ctx, base);
 }
 
-// NtWaitForSingleObjectEx: semântica real pendente (issue #16)
+// NtWaitForSingleObjectEx: semântica REAL (kernel_real.cpp)
 void __imp__NtWaitForSingleObjectEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtWaitForSingleObjectEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtWaitForSingleObjectEx(ctx, base);
 }
 
-// NtWriteFile: semântica real pendente (issue #16)
+// NtWriteFile: falha REAL — sem handle real (FS pendente)
 void __imp__NtWriteFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtWriteFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtWriteFile, "sem handle real (FS pendente)");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtWriteFileGather: semântica real pendente (issue #16)
+// NtWriteFileGather: falha REAL — FS pendente
 void __imp__NtWriteFileGather(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(NtWriteFileGather, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(NtWriteFileGather, "FS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// NtYieldExecution: semântica real pendente (issue #16)
+// NtYieldExecution: semântica REAL (kernel_real.cpp)
 void __imp__NtYieldExecution(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(NtYieldExecution, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_NtYieldExecution(ctx, base);
 }
 
 // ObCreateObject: semântica real pendente (issue #16)
@@ -1218,18 +1130,14 @@ void __imp__RtlCaptureContext(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// RtlCompareMemory: semântica real pendente (issue #16)
+// RtlCompareMemory: semântica REAL (kernel_real.cpp)
 void __imp__RtlCompareMemory(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlCompareMemory, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlCompareMemory(ctx, base);
 }
 
-// RtlCompareMemoryUlong: semântica real pendente (issue #16)
+// RtlCompareMemoryUlong: semântica REAL (kernel_real.cpp)
 void __imp__RtlCompareMemoryUlong(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlCompareMemoryUlong, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlCompareMemoryUlong(ctx, base);
 }
 
 // RtlCompareStringN: semântica real pendente (issue #16)
@@ -1239,25 +1147,19 @@ void __imp__RtlCompareStringN(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// RtlEnterCriticalSection: semântica real pendente (issue #16)
+// RtlEnterCriticalSection: semântica REAL (kernel_real.cpp)
 void __imp__RtlEnterCriticalSection(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlEnterCriticalSection, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlEnterCriticalSection(ctx, base);
 }
 
-// RtlFillMemoryUlong: semântica real pendente (issue #16)
+// RtlFillMemoryUlong: semântica REAL (kernel_real.cpp)
 void __imp__RtlFillMemoryUlong(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlFillMemoryUlong, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlFillMemoryUlong(ctx, base);
 }
 
-// RtlFreeAnsiString: semântica real pendente (issue #16)
+// RtlFreeAnsiString: semântica REAL (kernel_real.cpp)
 void __imp__RtlFreeAnsiString(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlFreeAnsiString, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlFreeAnsiString(ctx, base);
 }
 
 // RtlImageXexHeaderField: semântica real pendente (issue #16)
@@ -1267,95 +1169,71 @@ void __imp__RtlImageXexHeaderField(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// RtlInitAnsiString: semântica real pendente (issue #16)
+// RtlInitAnsiString: semântica REAL (kernel_real.cpp)
 void __imp__RtlInitAnsiString(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlInitAnsiString, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlInitAnsiString(ctx, base);
 }
 
-// RtlInitUnicodeString: semântica real pendente (issue #16)
+// RtlInitUnicodeString: semântica REAL (kernel_real.cpp)
 void __imp__RtlInitUnicodeString(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlInitUnicodeString, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlInitUnicodeString(ctx, base);
 }
 
-// RtlInitializeCriticalSection: semântica real pendente (issue #16)
+// RtlInitializeCriticalSection: semântica REAL (kernel_real.cpp)
 void __imp__RtlInitializeCriticalSection(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlInitializeCriticalSection, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlInitializeCriticalSection(ctx, base);
 }
 
-// RtlInitializeCriticalSectionAndSpinCount: semântica real pendente (issue #16)
+// RtlInitializeCriticalSectionAndSpinCount: semântica REAL (kernel_real.cpp)
 void __imp__RtlInitializeCriticalSectionAndSpinCount(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlInitializeCriticalSectionAndSpinCount, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlInitializeCriticalSectionAndSpinCount(ctx, base);
 }
 
-// RtlLeaveCriticalSection: semântica real pendente (issue #16)
+// RtlLeaveCriticalSection: semântica REAL (kernel_real.cpp)
 void __imp__RtlLeaveCriticalSection(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlLeaveCriticalSection, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlLeaveCriticalSection(ctx, base);
 }
 
-// RtlMultiByteToUnicodeN: semântica real pendente (issue #16)
+// RtlMultiByteToUnicodeN: semântica REAL (kernel_real.cpp)
 void __imp__RtlMultiByteToUnicodeN(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlMultiByteToUnicodeN, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlMultiByteToUnicodeN(ctx, base);
 }
 
-// RtlNtStatusToDosError: semântica real pendente (issue #16)
+// RtlNtStatusToDosError: semântica REAL (kernel_real.cpp)
 void __imp__RtlNtStatusToDosError(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlNtStatusToDosError, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlNtStatusToDosError(ctx, base);
 }
 
-// RtlRaiseException: exceptions de guest não suportadas (issue #15)
+// RtlRaiseException: SEH do guest não suportado (issue #15)
 void __imp__RtlRaiseException(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    HLOG("HLE FATAL: %s — exceptions de guest não suportadas (issue #15)", "RtlRaiseException");
+    FH2_HLE_ONCE(RtlRaiseException, "SEH do guest não suportado (issue #15)");
     ctx.r3.u32 = 0;
 }
 
-// RtlTimeFieldsToTime: semântica real pendente (issue #16)
+// RtlTimeFieldsToTime: semântica REAL (kernel_real.cpp)
 void __imp__RtlTimeFieldsToTime(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlTimeFieldsToTime, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlTimeFieldsToTime(ctx, base);
 }
 
-// RtlTimeToTimeFields: semântica real pendente (issue #16)
+// RtlTimeToTimeFields: semântica REAL (kernel_real.cpp)
 void __imp__RtlTimeToTimeFields(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlTimeToTimeFields, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlTimeToTimeFields(ctx, base);
 }
 
-// RtlTryEnterCriticalSection: semântica real pendente (issue #16)
+// RtlTryEnterCriticalSection: semântica REAL (kernel_real.cpp)
 void __imp__RtlTryEnterCriticalSection(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlTryEnterCriticalSection, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlTryEnterCriticalSection(ctx, base);
 }
 
-// RtlUnicodeStringToAnsiString: semântica real pendente (issue #16)
+// RtlUnicodeStringToAnsiString: semântica REAL (kernel_real.cpp)
 void __imp__RtlUnicodeStringToAnsiString(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlUnicodeStringToAnsiString, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlUnicodeStringToAnsiString(ctx, base);
 }
 
-// RtlUnicodeToMultiByteN: semântica real pendente (issue #16)
+// RtlUnicodeToMultiByteN: semântica REAL (kernel_real.cpp)
 void __imp__RtlUnicodeToMultiByteN(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlUnicodeToMultiByteN, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlUnicodeToMultiByteN(ctx, base);
 }
 
 // RtlUnwind: semântica real pendente (issue #16)
@@ -1365,25 +1243,23 @@ void __imp__RtlUnwind(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// RtlUpcaseUnicodeChar: semântica real pendente (issue #16)
+// RtlUpcaseUnicodeChar: semântica REAL (kernel_real.cpp)
 void __imp__RtlUpcaseUnicodeChar(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(RtlUpcaseUnicodeChar, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_RtlUpcaseUnicodeChar(ctx, base);
 }
 
-// StfsControlDevice: semântica real pendente (issue #16)
+// StfsControlDevice: falha REAL — STFS pendente
 void __imp__StfsControlDevice(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(StfsControlDevice, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(StfsControlDevice, "STFS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
-// StfsCreateDevice: semântica real pendente (issue #16)
+// StfsCreateDevice: falha REAL — STFS pendente
 void __imp__StfsCreateDevice(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(StfsCreateDevice, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(StfsCreateDevice, "STFS pendente");
+    ctx.r3.u32 = 0xC0000001u;
 }
 
 // VdCallGraphicsNotificationRoutines: semântica real pendente (issue #16)
@@ -1526,10 +1402,10 @@ void __imp__VdShutdownEngines(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// VdSwap: semântica real pendente (issue #16)
+// VdSwap: present do GPU — issue #17 (gráficos reais)
 void __imp__VdSwap(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(VdSwap, "semântica real pendente (issue #16)");
+    FH2_HLE_ONCE(VdSwap, "present do GPU — issue #17 (gráficos reais)");
     ctx.r3.u32 = 0;
 }
 
@@ -1757,11 +1633,11 @@ void __imp__XamCacheCloseFile(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamCacheOpenFile: semântica real pendente (issue #16)
+// XamCacheOpenFile: falha REAL — cache pendente
 void __imp__XamCacheOpenFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamCacheOpenFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamCacheOpenFile, "cache pendente");
+    ctx.r3.u32 = 0x803500F1u;
 }
 
 // XamCacheReset: semântica real pendente (issue #16)
@@ -1785,11 +1661,11 @@ void __imp__XamContentCreateEnumerator(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamContentCreateEx: semântica real pendente (issue #16)
+// XamContentCreateEx: falha REAL — sem pacote de conteúdo montado
 void __imp__XamContentCreateEx(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamContentCreateEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamContentCreateEx, "sem pacote de conteúdo montado");
+    ctx.r3.u32 = 0x803500F1u;
 }
 
 // XamContentDelete: semântica real pendente (issue #16)
@@ -1820,11 +1696,11 @@ void __imp__XamContentGetDeviceData(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamContentGetDeviceState: semântica real pendente (issue #16)
+// XamContentGetDeviceState: falha REAL — sem pacote de conteúdo montado
 void __imp__XamContentGetDeviceState(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamContentGetDeviceState, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamContentGetDeviceState, "sem pacote de conteúdo montado");
+    ctx.r3.u32 = 0x803500F1u;
 }
 
 // XamContentGetLicenseMask: semântica real pendente (issue #16)
@@ -1834,18 +1710,18 @@ void __imp__XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamContentOpenFile: semântica real pendente (issue #16)
+// XamContentOpenFile: falha REAL — sem pacote de conteúdo montado
 void __imp__XamContentOpenFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamContentOpenFile, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamContentOpenFile, "sem pacote de conteúdo montado");
+    ctx.r3.u32 = 0x803500F1u;
 }
 
-// XamContentResolve: semântica real pendente (issue #16)
+// XamContentResolve: falha REAL — sem pacote de conteúdo montado
 void __imp__XamContentResolve(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamContentResolve, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamContentResolve, "sem pacote de conteúdo montado");
+    ctx.r3.u32 = 0x803500F1u;
 }
 
 // XamCreateEnumeratorHandle: semântica real pendente (issue #16)
@@ -1883,11 +1759,9 @@ void __imp__XamGetActiveDashAppInfo(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamGetCurrentTitleId: semântica real pendente (issue #16)
+// XamGetCurrentTitleId: semântica REAL (kernel_real.cpp)
 void __imp__XamGetCurrentTitleId(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamGetCurrentTitleId, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamGetCurrentTitleId(ctx, base);
 }
 
 // XamGetExecutionId: semântica real pendente (issue #16)
@@ -1932,25 +1806,19 @@ void __imp__XamGetSystemVersion(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamInputGetCapabilities: semântica real pendente (issue #16)
+// XamInputGetCapabilities: semântica REAL (kernel_real.cpp)
 void __imp__XamInputGetCapabilities(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamInputGetCapabilities, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamInputGetCapabilities(ctx, base);
 }
 
-// XamInputGetCapabilitiesEx: semântica real pendente (issue #16)
+// XamInputGetCapabilitiesEx: semântica REAL (kernel_real.cpp)
 void __imp__XamInputGetCapabilitiesEx(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamInputGetCapabilitiesEx, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamInputGetCapabilitiesEx(ctx, base);
 }
 
-// XamInputGetState: semântica real pendente (issue #16)
+// XamInputGetState: semântica REAL (kernel_real.cpp)
 void __imp__XamInputGetState(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamInputGetState, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamInputGetState(ctx, base);
 }
 
 // XamInputRawState: semântica real pendente (issue #16)
@@ -1960,11 +1828,9 @@ void __imp__XamInputRawState(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamInputSetState: semântica real pendente (issue #16)
+// XamInputSetState: semântica REAL (kernel_real.cpp)
 void __imp__XamInputSetState(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamInputSetState, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamInputSetState(ctx, base);
 }
 
 // XamIsUIActive: semântica real pendente (issue #16)
@@ -2366,11 +2232,11 @@ void __imp__XamUserGetMembershipTierFromXUID(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamUserGetName: semântica real pendente (issue #16)
+// XamUserGetName: falha REAL — sem perfil assinado (offline real)
 void __imp__XamUserGetName(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamUserGetName, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamUserGetName, "sem perfil assinado (offline real)");
+    ctx.r3.u32 = 0x80320098u;
 }
 
 // XamUserGetOnlineCountryFromXUID: semântica real pendente (issue #16)
@@ -2380,25 +2246,23 @@ void __imp__XamUserGetOnlineCountryFromXUID(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XamUserGetSigninInfo: semântica real pendente (issue #16)
+// XamUserGetSigninInfo: falha REAL — sem perfil assinado (offline real)
 void __imp__XamUserGetSigninInfo(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamUserGetSigninInfo, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamUserGetSigninInfo, "sem perfil assinado (offline real)");
+    ctx.r3.u32 = 0x80320098u;
 }
 
-// XamUserGetSigninState: semântica real pendente (issue #16)
+// XamUserGetSigninState: semântica REAL (kernel_real.cpp)
 void __imp__XamUserGetSigninState(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(XamUserGetSigninState, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamUserGetSigninState(ctx, base);
 }
 
-// XamUserGetXUID: semântica real pendente (issue #16)
+// XamUserGetXUID: falha REAL — sem perfil assinado (offline real)
 void __imp__XamUserGetXUID(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XamUserGetXUID, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XamUserGetXUID, "sem perfil assinado (offline real)");
+    ctx.r3.u32 = 0x80320098u;
 }
 
 // XamUserNuiEnableBiometric: semântica real pendente (issue #16)
@@ -2660,11 +2524,11 @@ void __imp__XexGetModuleSection(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// XexGetProcedureAddress: semântica real pendente (issue #16)
+// XexGetProcedureAddress: falha REAL — STATUS_PROCEDURE_NOT_FOUND — export tables pendentes
 void __imp__XexGetProcedureAddress(PPCContext& ctx, uint8_t* base) {
     (void)base;
-    FH2_HLE_ONCE(XexGetProcedureAddress, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    FH2_HLE_ONCE(XexGetProcedureAddress, "STATUS_PROCEDURE_NOT_FOUND — export tables pendentes");
+    ctx.r3.u32 = 0x8007007Eu;
 }
 
 // XexLoadImage: semântica real pendente (issue #16)
@@ -2695,39 +2559,29 @@ void __imp____C_specific_handler(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0;
 }
 
-// _snprintf: semântica real pendente (issue #16)
+// _snprintf: semântica REAL (kernel_real.cpp)
 void __imp___snprintf(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(_snprintf, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real__snprintf(ctx, base);
 }
 
-// _vsnprintf: semântica real pendente (issue #16)
+// _vsnprintf: semântica REAL (kernel_real.cpp)
 void __imp___vsnprintf(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(_vsnprintf, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real__vsnprintf(ctx, base);
 }
 
-// sprintf: semântica real pendente (issue #16)
+// sprintf: semântica REAL (kernel_real.cpp)
 void __imp__sprintf(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(sprintf, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_sprintf(ctx, base);
 }
 
-// vsprintf: semântica real pendente (issue #16)
+// vsprintf: semântica REAL (kernel_real.cpp)
 void __imp__vsprintf(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(vsprintf, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_vsprintf(ctx, base);
 }
 
-// vswprintf: semântica real pendente (issue #16)
+// vswprintf: semântica REAL (kernel_real.cpp)
 void __imp__vswprintf(PPCContext& ctx, uint8_t* base) {
-    (void)base;
-    FH2_HLE_ONCE(vswprintf, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_vswprintf(ctx, base);
 }
 
 #endif // FH2_HAS_RECOMP

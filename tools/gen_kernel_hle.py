@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Gera runtime/ppc/kernel_hle.cpp com stubs HLE para todos os imports do
-xboxkrnl.exe/xam.xex referenciados por ppc_func_mapping.cpp (388 no FH2)."""
+"""Gera runtime/ppc/kernel_hle.cpp para os imports do xboxkrnl.exe/xam.xex
+referenciados por ppc_func_mapping.cpp (FH2).
+
+Três categorias:
+  REAL    — delega para fh2::kern::real_<Nome> em kernel_real.cpp
+            (semântica real: heap, tempo, threads, sync, TLS, printf, input)
+  FAILURE — stub que retorna status de falha REAL (o estado honesto do
+            sistema: recurso indisponível), nunca "sucesso vazio"
+  default — stub log-once + NTSTATUS 0 (semântica pendente, issue #16)
+
+NÃO EDITAR kernel_hle.cpp À MÃO — rode: python3 tools/gen_kernel_hle.py
+"""
 import re, os
 
-GEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "recomp", "generated")
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "src", "main", "cpp", "runtime", "ppc", "kernel_hle.cpp")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+GEN = os.path.join(ROOT, "recomp", "generated")
+OUT = os.path.join(ROOT, "app", "src", "main", "cpp", "runtime", "ppc", "kernel_hle.cpp")
 
 mapping = set()
 with open(f'{GEN}/ppc_func_mapping.cpp') as f:
@@ -21,31 +32,99 @@ for name in os.listdir(GEN):
 needed = sorted(mapping - defined)
 print(f'mapping={len(mapping)} defined={len(defined)} needed={len(needed)}')
 
-NOTES = {
-    'KeBugCheck': 'caminho fatal do guest',
-    'KeBugCheckEx': 'caminho fatal do guest',
-    'HalReturnToFirmware': 'guest pediu reboot',
-    'RtlRaiseException': 'exceptions de guest não suportadas (issue #15)',
-    'DbgPrint': 'debug output do guest',
-    'ExAllocatePool': 'retorna NULL até o allocator HLE (issue #16)',
-    'ExAllocatePoolTypeWithTag': 'retorna NULL até o allocator HLE (issue #16)',
-    'KeWaitForMultipleObjects': 'retorna imediatamente (sync HLE pendente)',
-    'KeDelayExecutionThread': 'retorna imediatamente (sync HLE pendente)',
-    'XAudioSubmitRenderDriverFrame': 'áudio do guest — issue #18',
+# ---- implementações reais (kernel_real.cpp) ----
+REAL = {
+    'DbgBreakPoint', 'DbgPrint',
+    'ExAllocatePool', 'ExAllocatePoolTypeWithTag', 'ExFreePool',
+    'ExCreateThread', 'ExTerminateThread',
+    'HalReturnToFirmware',
+    'KeBugCheck', 'KeBugCheckEx',
+    'KeDelayExecutionThread',
+    'KeGetCurrentProcessType', 'KeSetCurrentProcessType',
+    'KeInitializeMutant', 'KeReleaseMutant',
+    'KeQueryPerformanceFrequency', 'KeQuerySystemTime',
+    'KeResetEvent', 'KeResumeThread', 'KeSetEvent',
+    'KeTlsAlloc', 'KeTlsFree', 'KeTlsGetValue', 'KeTlsSetValue',
+    'KeWaitForMultipleObjects', 'KeWaitForSingleObject',
+    'MmAllocatePhysicalMemoryEx', 'MmFreePhysicalMemory',
+    'MmGetPhysicalAddress', 'MmQueryAllocationSize',
+    'MmCreateKernelStack', 'MmDeleteKernelStack',
+    'NtAllocateVirtualMemory', 'NtFreeVirtualMemory',
+    'NtClearEvent', 'NtClose', 'NtCreateEvent', 'NtCreateMutant',
+    'NtCreateSemaphore', 'NtReleaseMutant', 'NtReleaseSemaphore',
+    'NtSetEvent', 'NtSignalAndWaitForSingleObjectEx',
+    'NtWaitForMultipleObjectsEx', 'NtWaitForSingleObjectEx',
+    'NtYieldExecution',
+    'RtlCompareMemory', 'RtlCompareMemoryUlong', 'RtlFillMemoryUlong',
+    'RtlEnterCriticalSection', 'RtlInitializeCriticalSection',
+    'RtlInitializeCriticalSectionAndSpinCount', 'RtlLeaveCriticalSection',
+    'RtlTryEnterCriticalSection',
+    'RtlFreeAnsiString', 'RtlInitAnsiString', 'RtlInitUnicodeString',
+    'RtlMultiByteToUnicodeN', 'RtlNtStatusToDosError',
+    'RtlTimeFieldsToTime', 'RtlTimeToTimeFields',
+    'RtlUnicodeStringToAnsiString', 'RtlUnicodeToMultiByteN',
+    'RtlUpcaseUnicodeChar',
+    '_snprintf', '_vsnprintf', 'sprintf', 'vsprintf', 'vswprintf',
+    'XamInputGetCapabilities', 'XamInputGetCapabilitiesEx',
+    'XamInputGetState', 'XamInputSetState',
+    'XamGetCurrentTitleId', 'XamUserGetSigninState',
 }
-FATAL = {'KeBugCheck', 'KeBugCheckEx', 'HalReturnToFirmware', 'RtlRaiseException'}
 
-hdr = f'''// kernel_hle.cpp — stubs HLE dos imports de xboxkrnl.exe/xam.xex usados pelo FH2
+# ---- falhas honestas: o recurso real não existe neste boot ----
+# (sucesso-vazio derrubaria o guest com NULL/garbage downstream)
+FAILURE = {
+    # sistema de arquivos: iteração real (FsProvider) = próxima fase
+    'NtCreateFile':            (0xC0000034, 'STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente'),
+    'NtOpenFile':              (0xC0000034, 'STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente'),
+    'NtReadFile':              (0xC0000001, 'sem handle real (FS pendente)'),
+    'NtWriteFile':             (0xC0000001, 'sem handle real (FS pendente)'),
+    'NtQueryDirectoryFile':    (0xC0000001, 'FS pendente'),
+    'NtQueryFullAttributesFile': (0xC0000034, 'FS pendente'),
+    'NtQueryInformationFile':  (0xC0000001, 'FS pendente'),
+    'NtQueryVolumeInformationFile': (0xC0000001, 'FS pendente'),
+    'NtSetInformationFile':    (0xC0000001, 'FS pendente'),
+    'NtFlushBuffersFile':      (0xC0000001, 'FS pendente'),
+    'NtDeviceIoControlFile':   (0xC0000001, 'IOCTL pendente'),
+    'NtCancelIoFile':          (0xC0000001, 'IO pendente'),
+    'NtReadFileScatter':       (0xC0000001, 'FS pendente'),
+    'NtWriteFileGather':       (0xC0000001, 'FS pendente'),
+    'StfsControlDevice':       (0xC0000001, 'STFS pendente'),
+    'StfsCreateDevice':        (0xC0000001, 'STFS pendente'),
+    'XamContentCreateEx':      (0x803500F1, 'sem pacote de conteúdo montado'),
+    'XamContentOpenFile':      (0x803500F1, 'sem pacote de conteúdo montado'),
+    'XamContentResolve':       (0x803500F1, 'sem pacote de conteúdo montado'),
+    'XamContentGetDeviceState': (0x803500F1, 'sem pacote de conteúdo montado'),
+    'XamCacheOpenFile':        (0x803500F1, 'cache pendente'),
+    'XamUserGetXUID':          (0x80320098, 'sem perfil assinado (offline real)'),
+    'XamUserGetName':          (0x80320098, 'sem perfil assinado (offline real)'),
+    'XamUserGetSigninInfo':    (0x80320098, 'sem perfil assinado (offline real)'),
+    'XNetStartup':             (0x800704CF, 'rede real pendente (issue #19)'),
+    'NetDll_WSAStartup':       (0x800704CF, 'rede real pendente (issue #19)'),
+    'XexGetProcedureAddress':  (0x8007007E, 'STATUS_PROCEDURE_NOT_FOUND — export tables pendentes'),
+}
+
+# semântica pendente — mantém stub 0 com nota específica
+NOTES = {
+    'VdSwap': 'present do GPU — issue #17 (gráficos reais)',
+    'XAudioSubmitRenderDriverFrame': 'áudio do guest — issue #18',
+    'RtlRaiseException': 'SEH do guest não suportado (issue #15)',
+}
+
+hdr = f'''// kernel_hle.cpp — despacho HLE dos imports de xboxkrnl.exe/xam.xex (FH2)
 //
 // GERADO por tools/gen_kernel_hle.py — {len(needed)} símbolos exigidos por
-// ppc_func_mapping.cpp (ld.lld para no limite de 20 erros, mas o conjunto
-// completo vem da análise do mapping). Cada stub: log-once + retorno padrão
-// de sucesso (NTSTATUS 0). Semântica real = issue #16. NÃO EDITAR À MÃO.
+// ppc_func_mapping.cpp. Três caminhos:
+//   REAL  ({sum(1 for n in needed if n in REAL)}): delega para fh2::kern::real_* com semântica real
+//         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
+//   FAIL  ({sum(1 for n in needed if n in FAILURE)}): retorna status de falha REAL do estado do sistema
+//   stub  ({len(needed) - sum(1 for n in needed if n in REAL) - sum(1 for n in needed if n in FAILURE)}): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+// NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
 #include <android/log.h>
 #include "ppc_config.h"
 #include "ppc_context.h"
+#include "runtime/ppc/kernel_real.h"
 
 #define HLOG(...) __android_log_print(ANDROID_LOG_WARN, "FH2/HLE", __VA_ARGS__)
 
@@ -54,15 +133,24 @@ hdr = f'''// kernel_hle.cpp — stubs HLE dos imports de xboxkrnl.exe/xam.xex us
 '''
 
 body = []
+n_real = n_fail = n_stub = 0
 for name in needed:
-    note = NOTES.get(name, 'semântica real pendente (issue #16)')
-    if name in FATAL:
-        body.append(f'// {name}: {note}')
+    if name in REAL:
+        n_real += 1
+        body.append(f'// {name}: semântica REAL (kernel_real.cpp)')
+        body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
+        body.append(f'    fh2::kern::real_{name}(ctx, base);')
+    elif name in FAILURE:
+        n_fail += 1
+        status, why = FAILURE[name]
+        body.append(f'// {name}: falha REAL — {why}')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
         body.append(f'    (void)base;')
-        body.append(f'    HLOG("HLE FATAL: %s — {note}", "{name}");')
-        body.append('    ctx.r3.u32 = 0;')
+        body.append(f'    FH2_HLE_ONCE({name}, "{why}");')
+        body.append(f'    ctx.r3.u32 = 0x{status:08X}u;')
     else:
+        n_stub += 1
+        note = NOTES.get(name, 'semântica real pendente (issue #16)')
         body.append(f'// {name}: {note}')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
         body.append(f'    (void)base;')
@@ -73,4 +161,4 @@ for name in needed:
 
 with open(OUT, 'w') as f:
     f.write(hdr + '\n'.join(body) + '\n#endif // FH2_HAS_RECOMP\n')
-print(f'escrito: {OUT}')
+print(f'escrito: {OUT}  REAL={n_real} FAIL={n_fail} STUB={n_stub}')

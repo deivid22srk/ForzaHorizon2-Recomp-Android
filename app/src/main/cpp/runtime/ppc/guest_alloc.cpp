@@ -1,0 +1,198 @@
+// guest_alloc.cpp — implementação dos alocadores de memória guest
+//
+// Estratégia bump + free-list host-side: alocar avança um cursor; free()
+// devolve a faixa ao mapa de livres com coalescência de vizinhos. Toda a
+// contabilidade vive no HOST (std::map) — a memória guest não guarda
+// cabeçalhos, exatamente como o kernel real gerencia atrás do guest.
+#include "guest_alloc.h"
+
+#include <algorithm>
+
+namespace fh2::ppc {
+
+// ---------------------------------------------------------------- GuestHeap
+
+void GuestHeap::init(uint64_t base, uint64_t bytes) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ != 0) return; // idempotente
+    base_ = base;
+    size_ = bytes;
+    nextFree_ = base;
+    freeRanges_.clear();
+    blocks_.clear();
+}
+
+uint64_t GuestHeap::used() const {
+    std::lock_guard<std::mutex> lk(m_);
+    uint64_t used = nextFree_ - base_;
+    for (auto& [a, s] : blocks_) used += s;
+    return used;
+}
+
+uint64_t GuestHeap::alloc(uint64_t size, uint64_t align) {
+    if (size == 0) size = 1;
+    if (align < 16) align = 16;
+    align = std::max<uint64_t>(align, 16);
+
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return 0;
+
+    // 1) tenta first-fit nas faixas liberadas
+    for (auto it = freeRanges_.begin(); it != freeRanges_.end(); ++it) {
+        const uint64_t rangeStart = it->first;
+        const uint64_t rangeSize = it->second;
+        const uint64_t aligned =
+            (rangeStart + (align - 1)) & ~(align - 1);
+        const uint64_t pad = aligned - rangeStart;
+        if (pad + size > rangeSize) continue;
+
+        const uint64_t rest = rangeSize - pad - size;
+        freeRanges_.erase(it);
+        if (rest > 0) freeRanges_[aligned + size] = rest;
+        blocks_[aligned] = size;
+        return aligned;
+    }
+
+    // 2) bump no cursor
+    const uint64_t aligned = (nextFree_ + (align - 1)) & ~(align - 1);
+    if (aligned < nextFree_ || aligned + size > base_ + size_) return 0;
+    nextFree_ = aligned + size;
+    blocks_[aligned] = size;
+    return aligned;
+}
+
+void GuestHeap::free(uint64_t addr) {
+    if (addr == 0) return;
+    std::lock_guard<std::mutex> lk(m_);
+    auto it = blocks_.find(addr);
+    if (it == blocks_.end()) return; // free inválido: ignora (kernel logaria)
+    const uint64_t size = it->second;
+    blocks_.erase(it);
+
+    // coalescência com vizinhos imediatos
+    auto merge = [&](uint64_t& start, uint64_t& len) {
+        auto next = freeRanges_.find(start + len);
+        if (next != freeRanges_.end()) {
+            len += next->second;
+            freeRanges_.erase(next);
+        }
+        auto prev = std::prev(freeRanges_.lower_bound(start));
+        if (prev != freeRanges_.end() && prev->first + prev->second == start) {
+            start = prev->first;
+            len += prev->second;
+            freeRanges_.erase(prev);
+        }
+    };
+    uint64_t start = addr, len = size;
+    merge(start, len);
+    freeRanges_[start] = len;
+}
+
+// --------------------------------------------------------- GuestVirtWindow
+
+void GuestVirtWindow::init(uint64_t base, uint64_t bytes, uint64_t page) {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ != 0) return;
+    base_ = base;
+    size_ = bytes;
+    page_ = page ? page : 0x1000;
+    nextFree_ = base;
+    freeRanges_.clear();
+    blocks_.clear();
+}
+
+uint64_t GuestVirtWindow::used() const {
+    std::lock_guard<std::mutex> lk(m_);
+    uint64_t used = nextFree_ - base_;
+    for (auto& [a, s] : blocks_) used += s;
+    return used;
+}
+
+uint64_t GuestVirtWindow::alloc(uint64_t size) {
+    if (size == 0) size = page_;
+    size = (size + page_ - 1) & ~(page_ - 1);
+
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return 0;
+
+    for (auto it = freeRanges_.begin(); it != freeRanges_.end(); ++it) {
+        if (it->second < size) continue;
+        const uint64_t addr = it->first;
+        const uint64_t rest = it->second - size;
+        freeRanges_.erase(it);
+        if (rest > 0) freeRanges_[addr + size] = rest;
+        blocks_[addr] = size;
+        return addr;
+    }
+    const uint64_t aligned = (nextFree_ + page_ - 1) & ~(page_ - 1);
+    if (aligned + size > base_ + size_) return 0;
+    nextFree_ = aligned + size;
+    blocks_[aligned] = size;
+    return aligned;
+}
+
+uint64_t GuestVirtWindow::allocAt(uint64_t addr, uint64_t size) {
+    if (size == 0) size = page_;
+    size = (size + page_ - 1) & ~(page_ - 1);
+    addr = addr & ~(page_ - 1);
+
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return 0;
+    if (addr < base_ || addr + size > base_ + size_) return 0;
+
+    // sobrepõe com algum bloco em uso?
+    if (!blocks_.empty()) {
+        auto first = blocks_.lower_bound(addr);
+        if (first != blocks_.end() && first->first < addr + size) return 0;
+        if (first != blocks_.begin()) {
+            auto prev = std::prev(first);
+            if (prev->first + prev->second > addr) return 0;
+        }
+    }
+    // recorta das faixas livres que intersectam [addr, addr+size)
+    std::vector<std::pair<uint64_t, uint64_t>> keep;
+    auto it = freeRanges_.begin();
+    while (it != freeRanges_.end()) {
+        const uint64_t rs = it->first, re = it->first + it->second;
+        if (re <= addr || rs >= addr + size) { ++it; continue; }
+        if (rs < addr) keep.emplace_back(rs, addr - rs);          // parte antes
+        if (re > addr + size) keep.emplace_back(addr + size, re - (addr + size));
+        it = freeRanges_.erase(it);
+    }
+    for (auto& [s, l] : keep) freeRanges_[s] = l;
+    blocks_[addr] = size;
+    return addr;
+}
+
+void GuestVirtWindow::free(uint64_t addr) {
+    if (addr == 0) return;
+    std::lock_guard<std::mutex> lk(m_);
+    auto it = blocks_.find(addr);
+    if (it == blocks_.end()) return;
+    const uint64_t size = it->second;
+    blocks_.erase(it);
+    auto merge = [&](uint64_t& start, uint64_t& len) {
+        auto next = freeRanges_.find(start + len);
+        if (next != freeRanges_.end()) {
+            len += next->second;
+            freeRanges_.erase(next);
+        }
+        auto prev = std::prev(freeRanges_.lower_bound(start));
+        if (prev != freeRanges_.end() && prev->first + prev->second == start) {
+            start = prev->first;
+            len += prev->second;
+            freeRanges_.erase(prev);
+        }
+    };
+    uint64_t start = addr, len = size;
+    merge(start, len);
+    freeRanges_[start] = len;
+}
+
+uint64_t GuestVirtWindow::blockSize(uint64_t addr) const {
+    std::lock_guard<std::mutex> lk(m_);
+    auto it = blocks_.find(addr & ~(page_ - 1));
+    return it == blocks_.end() ? 0 : it->second;
+}
+
+} // namespace fh2::ppc

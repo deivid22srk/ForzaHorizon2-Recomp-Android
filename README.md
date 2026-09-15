@@ -35,11 +35,12 @@ recompilando PowerPC → C++ → binário nativo, com runtime desenhado **mobile
 | Runtime: GLES 3.1 (contexto/superfície com ciclo completo) | ✅ |
 | Runtime: memória guest (~2,25 GB, base dinâmica — não depende de mmap hint) | ✅ |
 | Runtime: loader XEX2 real (decripta AES-128 + LZX → memória guest, imports consistentes com a análise) | ✅ |
-| Runtime: 388 stubs HLE de kernel (link do .so) | ✅ |
+| Runtime: kernel HLE — 75 imports com semântica REAL (heap, tempo, threads guest reais, sync, TLS, printf, input), 26 falhas reais, 287 stubs | ✅ |
+| Runtime: execução REAL do guest — tabela mágica de 128.708 funções + entry `_xstart` chamado (CRT do jogo roda) | ✅ |
 | Runtime: AAudio (stream low-latency) | ✅ |
-| Input: HUD touch de direção + gamepad | ✅ |
+| Input: HUD touch de direção + gamepad → XamInputGetState | ✅ |
+| Filesystem real para o guest (NtCreateFile/NtReadFile sobre FsProvider) | 🚧 Próximo |
 | Tradução D3D9/Xenos → Vulkan/GLES | 🚧 Em progresso |
-| Execução completa do guest (kernel/IO) | 🚧 Em progresso |
 
 O APK de cada build está nos **artifacts do GitHub Actions** (workflow `Build APK`).
 
