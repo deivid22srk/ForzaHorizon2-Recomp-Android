@@ -1,0 +1,36 @@
+# ForzaHorizon2-Recomp-Android — config principal do XenonRecomp
+#
+# Caminhos relativos a este arquivo (recomp/config/).
+# O XEX descriptografado fica em recomp/private/ (gitignored — conteúdo protegido).
+#
+# Jump tables: XenonAnalyse não detectou padrões no binário do FH2 (a lógica
+# atual é calibrada para Sonic Unleashed). Backlog rastreado em docs/BACKLOG.md
+# e issue #2. Sem a tabela, jump tables viram saltos indiretos genéricos.
+
+[main]
+file_path = "../private/default_dec.xex"
+out_directory_path = "../generated"
+
+# Otimizações de fase inicial (desativadas até runtime funcional — README XenonRecomp)
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# Register restore & save functions — localizadas via byte patterns documentados
+# (tools/find_save_restore.py; verificação: tools/recomp/config/save_restore.txt)
+restgprlr_14_address = 0x82c010d0
+savegprlr_14_address = 0x82c01080
+restfpr_14_address = 0x82c015ec
+savefpr_14_address = 0x82c015a0
+restvmx_14_address = 0x82c026d8
+savevmx_14_address = 0x82c02440
+restvmx_64_address = 0x82c0276c
+savevmx_64_address = 0x82c024d4
+
+# setjmp/longjmp: não identificados com os padrões atuais — omitidos.
+# Consequência: SjLj/exceptions do guest não funcionam (backlog, issue #4).
