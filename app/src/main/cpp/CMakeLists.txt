@@ -22,7 +22,8 @@ add_library(fh2recomp SHARED
     runtime/audio/audio_output.cpp
     runtime/input/input_state.cpp
     runtime/fs/fs_provider.cpp
-    runtime/ppc/ppc_runtime.cpp)
+    runtime/ppc/ppc_runtime.cpp
+    runtime/ppc/kernel_hle.cpp)
 
 target_include_directories(fh2recomp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
