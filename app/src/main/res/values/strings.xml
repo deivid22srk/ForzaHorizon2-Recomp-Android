@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FH2 Recomp (Android)</string>
+    <string name="disclaimer_title">Aviso legal</string>
+    <string name="disclaimer_text">Este é um projeto homebrew/educacional de recompilação estática, sem afiliação com a Microsoft, Playground Games ou Turn 10 Studios. Nenhum asset do jogo (texturas, áudio, mapa, carros) é distribuído neste app. Para jogar, você deve possuir uma cópia legalmente adquirida de Forza Horizon 2 (Xbox 360) e fornecer os arquivos do jogo no diretório selecionado.</string>
+    <string name="select_folder">Selecionar pasta de assets do jogo</string>
+    <string name="settings_title">Configurações</string>
+    <string name="resolution_scale">Escala de resolução</string>
+    <string name="fps_target">FPS alvo</string>
+    <string name="graphics_backend">Backend gráfico</string>
+    <string name="hud_opacity">Opacidade dos controles touch</string>
+    <string name="hud_size">Tamanho dos controles touch</string>
+    <string name="launch_game">Iniciar jogo</string>
+    <string name="game_running">Executando…</string>
+    <string name="no_assets">Nenhum diretório de assets selecionado. Selecione a pasta contendo os arquivos do jogo antes de iniciar.</string>
+</resources>

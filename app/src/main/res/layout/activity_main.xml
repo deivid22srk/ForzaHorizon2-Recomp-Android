@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF101418">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="#FF3DDC84"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/version_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#FF8899AA"
+            android:textSize="12sp"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#FF1B2A3A"
+            android:padding="14dp"
+            android:text="@string/disclaimer_text"
+            android:textColor="#FFCCDDEE"
+            android:textSize="14sp"
+            android:layout_marginBottom="16dp" />
+
+        <Button
+            android:id="@+id/btn_select_folder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/select_folder" />
+
+        <TextView
+            android:id="@+id/folder_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#FF8899AA"
+            android:textSize="13sp"
+            android:paddingVertical="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_title"
+            android:textColor="#FFFFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="8dp">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/resolution_scale"
+                android:textColor="#FFCCDDEE" />
+            <SeekBar
+                android:id="@+id/seek_resolution"
+                android:layout_width="180dp"
+                android:layout_height="wrap_content"
+                android:min="50"
+                android:max="100"
+                android:progress="75" />
+            <TextView
+                android:id="@+id/label_resolution"
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="75%"
+                android:textColor="#FFFFFFFF"
+                android:gravity="end" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/fps_target"
+                android:textColor="#FFCCDDEE" />
+            <Switch
+                android:id="@+id/switch_fps"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="30 / 60"
+                android:textColor="#FFFFFFFF" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/graphics_backend"
+                android:textColor="#FFCCDDEE" />
+            <Switch
+                android:id="@+id/switch_backend"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="GLES / Vulkan"
+                android:textColor="#FFFFFFFF" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:text="@string/hud_opacity"
+                android:textColor="#FFCCDDEE" />
+            <SeekBar
+                android:id="@+id/seek_opacity"
+                android:layout_width="180dp"
+                android:layout_height="wrap_content"
+                android:min="20"
+                android:max="100"
+                android:progress="70" />
+            <TextView
+                android:id="@+id/label_opacity"
+                android:layout_width="56dp"
+                android:layout_height="wrap_content"
+                android:text="70%"
+                android:textColor="#FFFFFFFF"
+                android:gravity="end" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btn_launch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="#FF3DDC84"
+            android:textColor="#FF101418"
+            android:text="@string/launch_game" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Projeto homebrew/educacional — não afiliado à Microsoft, Playground Games ou Turn 10 Studios. Sem distribuição de assets. Código: recompilação estática via XenonRecomp (PowerPC → C++ → ARM64)."
+            android:textColor="#FF556677"
+            android:textSize="11sp" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF000000">
+
+    <com.fh2recomp.activity.GameSurfaceView
+        android:id="@+id/game_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <com.fh2recomp.input.TouchHudView
+        android:id="@+id/touch_hud"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+</FrameLayout>
