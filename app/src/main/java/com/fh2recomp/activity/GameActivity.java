@@ -19,6 +19,7 @@ public class GameActivity extends AppCompatActivity {
 
     private NativeBridge nativeBridge;
     private TouchHudView hud;
+    private boolean pausedState;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,7 +36,7 @@ public class GameActivity extends AppCompatActivity {
         hud = findViewById(R.id.touch_hud);
         hud.setOpacity(hudOpacity / 100f);
         // Eventos do HUD alimentam o estado do "controller virtual" (port 0)
-        hud.setListener((button, pressed) -> NativeBridge.onVirtualButton(button, pressed));
+        hud.setButtonListener((button, pressed) -> NativeBridge.onVirtualButton(button, pressed));
         hud.setStickListener((x, y) -> NativeBridge.onVirtualStick(x, y));
         // Surface criada pelo GameSurfaceView dispara o boot do runtime nativo
         GameSurfaceView surface = findViewById(R.id.game_surface);
@@ -47,26 +48,27 @@ public class GameActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
-        if (nativeBridge != null) nativeBridge.onPause();
+        if (nativeBridge != null) { nativeBridge.nativePause(); pausedState = true; }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (nativeBridge != null) nativeBridge.onResume();
+        if (nativeBridge != null) { nativeBridge.nativeResume(); pausedState = false; }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (nativeBridge != null) nativeBridge.onStop();
+        if (nativeBridge != null) nativeBridge.nativeStop();
     }
 
     @Override
     public void onBackPressed() {
         // Botão back = pause; segunda vez sai (evita encerrar o jogo sem querer)
-        if (nativeBridge != null && !nativeBridge.isPaused()) {
-            nativeBridge.onPause();
+        if (nativeBridge != null && !pausedState) {
+            nativeBridge.nativePause();
+            pausedState = true;
             android.widget.Toast.makeText(this,
                     "Pausado — pressione voltar novamente para sair",
                     android.widget.Toast.LENGTH_LONG).show();
