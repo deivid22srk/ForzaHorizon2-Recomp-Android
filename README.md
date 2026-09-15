@@ -33,7 +33,8 @@ recompilando PowerPC → C++ → binário nativo, com runtime desenhado **mobile
 | SAF: leitura DIRETA da pasta escolhida (fd via ContentResolver, sem cópia p/ o app) | ✅ Funcional |
 | HUD touch multi-touch (direção + pedais simultâneos) | ✅ Funcional |
 | Runtime: GLES 3.1 (contexto/superfície com ciclo completo) | ✅ |
-| Runtime: memória guest (mmap base+0x82000000) | ✅ |
+| Runtime: memória guest (~2,25 GB, base dinâmica — não depende de mmap hint) | ✅ |
+| Runtime: loader XEX2 real (decripta AES-128 + LZX → memória guest, imports consistentes com a análise) | ✅ |
 | Runtime: 388 stubs HLE de kernel (link do .so) | ✅ |
 | Runtime: AAudio (stream low-latency) | ✅ |
 | Input: HUD touch de direção + gamepad | ✅ |
@@ -67,7 +68,8 @@ tools/run_recomp.sh         # análise + recomp → recomp/generated/
 1. Instale o APK (side-load; Android 10+).
 2. Selecione a pasta dos arquivos do jogo (SAF) na primeira execução — os
    arquivos são lidos **diretamente da pasta escolhida**, sem cópia para
-   dentro do app (só os saves ficam no storage do app).
+   dentro do app (só os saves ficam no storage do app). No boot, o `default.xex`
+   dessa pasta é decodificado e carregado na memória do jogo pelo runtime.
 3. Controles: **touch** (analógico virtual à esquerda = direção; GAS/FREIO à
    direita; MÃO = freio de mão; C+/C- = câmbio) ou **gamepad físico**
    (triggers analógicos = acelerador/freio, LB/RB = câmbio, X = freio de mão).

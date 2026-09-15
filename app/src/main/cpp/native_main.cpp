@@ -114,7 +114,8 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
     if (uri && assetsTreeUri) env->ReleaseStringUTFChars(assetsTreeUri, uri);
 
     if (!ok) {
-        LOGE("nativeBoot: falha ao inicializar memória guest");
+        LOGE("nativeBoot: inicialização do guest falhou (memória/loader XEX — "
+             "ver FH2/PPC e FH2/XEX no logcat)");
         s.ppc.reset();
         s.audio.reset();
         s.gfx.reset();

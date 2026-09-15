@@ -17,6 +17,17 @@ fixpoint) e lvehx/lhbrx/dcbst/frsqrte. Validação: regeneração completa
 O pipeline (tools/build_recomp_tools.sh) clona o fork automaticamente;
 override via FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH.
 
+## Runtime — feito nesta fase
+
+- [x] **Loader XEX2 real** (2026-09-16): `runtime/ppc/xex_loader.cpp` lê o
+      default.xex do usuário (fd SAF direto), decodifica (AES-128 retail +
+      none/basic/LZX), aplica o patch de imports igual ao da análise e copia
+      para a memória guest (base 0x82000000, entry 0x82BF2CD0 validados
+      contra o jogo real; 388 thunks de função patchados = 388 stubs HLE)
+- [x] **Memória guest sem hint fixa** (2026-09-16): base dinâmica aceita
+      (o código gerado recebe `base` por parâmetro) — boot funciona em
+      devices que não honram mmap hints baixas
+
 ## Kernel/IO (runtime)
 
 - [ ] **Imports do XEX**: resolver a tabela de imports (xam/xboxkrnl) para

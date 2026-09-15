@@ -174,3 +174,31 @@ alias-safe com vD==vA/vB; (7) frsqrte = 1/sqrt exato (dentro da margem da
 ISA; converge igual nas iterações de Newton-Raphson do jogo). CI clona o
 fork (FH2_XENONRECOMP_REPO/BH overrides). Validação: 503/503 TUs gerados
 compilam; 0 "Unrecognized instruction".
+
+### D23 — mmap de base dinâmica + loader XEX2 real no runtime (boot no device)
+Bug de produção (moto g34 5G, Android 15, log yAVtPSny): o boot abortava com
+"mmap hint 0x0200000 falhou — modelo base+addr inviável". O código exigia que
+o kernel honrasse a hint fixa (memcmp do endereço devolvido); o Android daquele
+device devolveu 0x6ede710000 (região baixa ocupada) e o mapeamento VÁLIDO foi
+descartado. Correção conceitual: no código gerado pelo XenonRecomp, `base` é um
+ponteiro recebido POR PARÂMETRO em toda função (PPC_LOAD/STORE = *(base+addr)),
+logo o modelo base+addr é válido em QUALQUER endereço — a hint é só conveniência
+de depuração. Agora: (1) mmap com hint, sem MAP_FIXED; (2) se o kernel mover,
+o endereço devolvido é ACEITO; (3) se MAP_FAILED, nova tentativa sem hint;
+(4) só falha de verdade quando não há memória virtual. Validado no host
+reproduzindo o modo de falha do device (hint bloqueada com MAP_FIXED_NOREPLACE).
+
+Na mesma inicialização o runtime agora CARREGA o XEX2 de verdade
+(runtime/ppc/xex_loader.cpp): lê default.xex via FsProvider (fd SAF direto —
+D21), valida magic/tamanho, decodifica com o MESMO pipeline da análise
+(XenonUtils::Xex2LoadImage — AES-128 retail key + descompressão none/basic/LZX
+via libmspack), aplica o patch de imports idêntico ao do recompilador
+(twi0;twi0;twi0;blr nos thunks de função) e copia a imagem para
+memBase_+0x82000000. A consistência com o código gerado é garantida por ser o
+MESMO código vendido em tools/. Validação real contra o jogo (host): base
+0x82000000, entry 0x82BF2CD0, size 0x1700000, MZ na memória guest, e a tabela
+de imports confere endereço por endereço: 789 descritores = 388 funções
+patchadas (exatamente o número de stubs HLE — issue #16) + 401 variáveis
+intactas. Execução do entry point continua bloqueada por kernel/IO (BACKLOG) —
+sem promessa falsa: o boot agora chega ao frame loop com a imagem do jogo
+carregada na memória guest.

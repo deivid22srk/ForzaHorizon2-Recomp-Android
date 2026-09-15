@@ -1,16 +1,17 @@
 // ppc_runtime.cpp — bootstrap do guest
 //
-// Modelo de memória (crítico): o código gerado pelo XenonRecomp endereça a
-// memória guest de forma ABSOLUTA — `PPC_LOAD_U32(x) = *(base + x)` onde x é o
-// endereço guest (ex.: 0x82000000 + offset). Portanto o runtime deve mapear a
-// região de forma que `memBase + PPC_IMAGE_BASE` aponte para o buffer real.
-// Reservamos com mmap hint em 0x02000000 (64-bit Android honra hints livres):
-// guest fica em 0x84000000.. e ainda sobra espaço acima para a "magic function
-// table" do XenonRecomp (funções mapeadas após a região válida do XEX).
-// MAP_NORESERVE: 2,25 GB de endereçamento virtual, commit só no uso real.
+// Modelo de memória (crítico): o código gerado pelo XenonRecomp acessa a
+// memória guest de forma relativa — `PPC_LOAD_U32(x) = *(base + x)` onde `base`
+// é recebido POR PARÂMETRO em toda função e x é o endereço guest (ex.:
+// 0x82000000 + offset). Logo, qualquer região contígua de kMemTotal bytes é
+// válida: reservamos com hint 0x02000000 (endereços baixos facilitam
+// depuração) e ACEITAMOS o endereço que o kernel devolver — alguns kernels
+// Android não honram hints baixas (região ocupada) e isso NÃO impede o modelo
+// base+addr. MAP_NORESERVE: commit só no uso real.
 #include "ppc_runtime.h"
 
 #include <android/log.h>
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -32,11 +33,11 @@
 
 namespace fh2::ppc {
 
-// Endereço virtual do hint: guest base = hint + 0x82000000 = 0x84000000.
+// Endereço virtual desejado: guest base (VA 0 do guest) ficaria aqui.
 static constexpr uintptr_t kMemBaseHint = 0x02000000ull;
 // Espaço acima do fim da imagem: heap guest + magic function table
-// (endereços de função vivem após a região válida do XEX — ver README do
-// XenonRecomp / ppc_config.h: PPC_CODE_BASE).
+// (endereços de função vivem após a região válida do XEX — ver ppc_config.h:
+// PPC_CODE_BASE).
 static constexpr size_t kMemImageSize =
 #if FH2_HAS_RECOMP
     static_cast<size_t>(PPC_IMAGE_SIZE);
@@ -57,32 +58,59 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
 #if FH2_HAS_RECOMP
     if (memBase_) return true; // idempotente
 
+    // Tentativa 1: hint fixa (sem MAP_FIXED — o kernel pode mover, e tudo bem).
     void* mapped = mmap(reinterpret_cast<void*>(kMemBaseHint), kMemTotal,
                         PROT_READ | PROT_WRITE,
                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (mapped == MAP_FAILED || reinterpret_cast<uintptr_t>(mapped) != kMemBaseHint) {
-        PLOG("mmap hint 0x%llX falhou (obtido %p) — modelo base+addr inviável neste device",
-             (unsigned long long)kMemBaseHint, mapped == MAP_FAILED ? nullptr : mapped);
-        if (mapped != MAP_FAILED) munmap(mapped, kMemTotal);
-        return false;
+    if (mapped == MAP_FAILED) {
+        // Tentativa 2: sem hint — deixa o kernel escolher (VA 64-bit sobra).
+        PLOG("mmap com hint falhou (errno=%d) — tentando sem hint", errno);
+        mapped = mmap(nullptr, kMemTotal, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (mapped == MAP_FAILED) {
+            PLOG("mmap de %zu MB falhou mesmo sem hint (errno=%d) — memória "
+                 "guest indisponível neste device", kMemTotal >> 20, errno);
+            return false;
+        }
     }
     memBase_ = reinterpret_cast<uintptr_t>(mapped);
     guestBase_ = memBase_ + 0x82000000ull;
-    PLOG("memória guest reservada: %zu MB (hint fixa) — guest em 0x%08llX",
-         kMemTotal >> 20, (unsigned long long)guestBase_);
+    if (memBase_ == kMemBaseHint) {
+        PLOG("memória guest: %zu MB (hint fixa) — imagem guest em 0x%08llX",
+             kMemTotal >> 20, (unsigned long long)guestBase_);
+    } else {
+        // Caminho observado no moto g34 5G (Android 15): o kernel ignora a
+        // hint e devolve outra região. O modelo base+addr continua correto —
+        // toda função gerada recebe `base` por parâmetro.
+        PLOG("memória guest: %zu MB em base dinâmica 0x%016llX (hint 0x%08llX "
+             "não honrada — irrelevante: acessos são base+addr) — imagem em "
+             "0x%016llX",
+             kMemTotal >> 20, (unsigned long long)memBase_,
+             (unsigned long long)kMemBaseHint, (unsigned long long)guestBase_);
+    }
 
-    // A imagem (código+dados) do usuário não é carregada nesta fase: o XEX
-    // distribuído em disco é retail-encrypted; a imagem descriptografada será
-    // embutida pelo CI como asset do APK (BACKLOG: loader de imagem + patches).
-    // Aqui apenas verificamos a presença dos arquivos esperados na pasta SAF.
+    // Carregamento REAL da imagem guest: lê default.xex do storage (fd SAF
+    // direto), decodifica (AES-128 + descompressão + patch de imports
+    // idêntico ao da análise) e copia para memBase_ + PPC_IMAGE_BASE.
     if (fs) {
         std::vector<uint8_t> probe;
-        if (fs->readFile("default.xex", probe, /*maxBytes=*/1)) {
-            PLOG("pasta de assets: default.xex presente (%zu+ bytes)", probe.size());
-        } else {
-            PLOG("pasta de assets: default.xex não encontrado (o jogo não executará "
-                 "nesta fase; loader de imagem é backlog)");
+        if (!fs->readFile("default.xex", probe, /*maxBytes=*/1)) {
+            PLOG("default.xex ausente na pasta selecionada — app segue em modo "
+                 "shell (coloque o arquivo na pasta e reinicie o jogo)");
+            return true;
         }
+        XexImageInfo info;
+        std::string err;
+        if (!loadXexImage(*fs, reinterpret_cast<uint8_t*>(memBase_), kMemTotal,
+                          info, err)) {
+            PLOG("falha ao carregar default.xex: %s", err.c_str());
+            return false;
+        }
+        imageInfo_ = info;
+        PLOG("imagem guest mapeada em 0x%016llX (base guest 0x%08X, entry "
+             "0x%08X, %u bytes) — execução aguarda kernel/IO (issue #16)",
+             (unsigned long long)(memBase_ + info.base), info.base,
+             info.entryPoint, info.imageSize);
     }
     return true;
 #else
@@ -114,8 +142,8 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
         }
         std::this_thread::sleep_for(frameInterval);
 #if FH2_HAS_RECOMP
-        // TODO(backlog #16): chamada do guest main (entry 0x82BF2CD0 via
-        // ppc_func_mapping) após kernel/IO responder aos imports.
+        // TODO(backlog #16): chamada do guest main (entry via ppc_func_mapping)
+        // após a camada kernel/IO responder aos imports.
 #endif
     }
 

@@ -3,7 +3,7 @@
 # (gráficos GLES3/Vulkan, áudio AAudio, input, fs). Se recomp/generated não
 # existir, o app compila em modo "shell" (UI e pipeline de setup funcionam).
 cmake_minimum_required(VERSION 3.22)
-project(fh2recomp LANGUAGES CXX)
+project(fh2recomp LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,7 +24,6 @@ add_library(fh2recomp SHARED
     runtime/fs/fs_provider.cpp
     runtime/ppc/ppc_runtime.cpp
     runtime/ppc/kernel_hle.cpp)
-
 target_include_directories(fh2recomp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${RECOMP_DIR}/runtime)
@@ -42,6 +41,29 @@ if(RECOMP_COUNT GREATER 0)
     target_include_directories(fh2recomp PRIVATE ${GENERATED_DIR} ${RECOMP_DIR}/runtime)
 else()
     target_compile_definitions(fh2recomp PRIVATE FH2_HAS_RECOMP=0)
+endif()
+
+# --- Loader XEX2 do runtime: reutiliza o XenonUtils vendido (mesmo pipeline
+# --- de decriptação/descompressão da análise — consistência garantida) ---
+set(TOOLS_RECOMP_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../tools/XenonRecomp)
+set(XU_DIR ${TOOLS_RECOMP_DIR}/XenonUtils)
+if(EXISTS ${XU_DIR}/xex.cpp)
+    target_sources(fh2recomp PRIVATE
+        runtime/ppc/xex_loader.cpp
+        ${XU_DIR}/xex.cpp
+        ${XU_DIR}/image.cpp
+        ${XU_DIR}/xex_patcher.cpp
+        ${XU_DIR}/memory_mapped_file.cpp
+        ${TOOLS_RECOMP_DIR}/thirdparty/tiny-AES-c/aes.c
+        ${TOOLS_RECOMP_DIR}/thirdparty/libmspack/libmspack/mspack/lzxd.c)
+    target_include_directories(fh2recomp PRIVATE
+        ${XU_DIR}
+        ${TOOLS_RECOMP_DIR}/thirdparty/tiny-AES-c
+        ${TOOLS_RECOMP_DIR}/thirdparty/TinySHA1
+        ${TOOLS_RECOMP_DIR}/thirdparty/libmspack/libmspack/mspack)
+elseif(RECOMP_COUNT GREATER 0)
+    message(FATAL_ERROR "FH2_HAS_RECOMP=1 mas XenonUtils ausente em tools/XenonRecomp "
+        "— o loader XEX do runtime não pode compilar. Rode tools/build_recomp_tools.sh primeiro.")
 endif()
 
 # --- Vulkan priorizado (Adreno/Turnip); GLES 3.1 permanece como fallback ---
