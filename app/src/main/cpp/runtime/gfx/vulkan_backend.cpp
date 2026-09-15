@@ -1,9 +1,11 @@
 // vulkan_backend.cpp — esqueleto funcional do backend Vulkan
 //
 // Estrutura: capability check → instance → physical device (Adreno/Turnip
-// preferidos) → logical device com fila gráfica. A tradução Xenos→Vulkan
-// (render passes dinâmicos, push descriptors, pipeline cache persistente em
-// disco) é o próximo marco do runtime gráfico (docs/BACKLOG.md).
+// preferidos) → logical device com fila gráfica. A instância é membro da
+// classe e destruída em onSurfaceLost/destructor (sem leaks entre
+// pause/resume). A tradução Xenos→Vulkan (render passes dinâmicos, push
+// descriptors, pipeline cache persistente em disco) é o próximo marco do
+// runtime gráfico (issue #17).
 #include "vulkan_backend.h"
 
 #include <android/log.h>
@@ -31,21 +33,19 @@ bool VulkanBackend::provisionalInit() {
 
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-#if defined(VK_KHR_android_surface)
-    // A extensão de superfície Android é padrão no NDK
-#endif
 
-    VkInstance instance = VK_NULL_HANDLE;
-    if (vkCreateInstance(&ci, nullptr, &instance) != VK_SUCCESS) {
+    if (vkCreateInstance(&ci, nullptr, &instance_) != VK_SUCCESS) {
         VLOG("vkCreateInstance falhou — caindo para GLES");
+        instance_ = VK_NULL_HANDLE;
         return false;
     }
 
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr);
+    vkEnumeratePhysicalDevices(instance_, &gpuCount, nullptr);
     VLOG("Vulkan OK: %u dispositivo(s) físico(s)", gpuCount);
     if (gpuCount == 0) {
-        vkDestroyInstance(instance, nullptr);
+        vkDestroyInstance(instance_, nullptr);
+        instance_ = VK_NULL_HANDLE;
         return false;
     }
 
@@ -61,8 +61,12 @@ bool VulkanBackend::onSurfaceAvailable(ANativeWindow* window, int width, int hei
 }
 
 void VulkanBackend::onSurfaceLost() {
-    // v0.1: apenas invalida o estado provisional; a destruição de instance/device
-    // chega com o swapchain completo (docs/BACKLOG.md — runtime gráfico).
+    // v0.1: derruba a instância provisional; a destruição de device/swapchain
+    // chega com o runtime gráfico completo (issue #17).
+    if (instance_ != VK_NULL_HANDLE) {
+        vkDestroyInstance(instance_, nullptr);
+        instance_ = VK_NULL_HANDLE;
+    }
     initialized_ = false;
 }
 

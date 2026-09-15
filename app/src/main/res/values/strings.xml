@@ -9,7 +9,6 @@
     <string name="fps_target">FPS alvo</string>
     <string name="graphics_backend">Backend gráfico</string>
     <string name="hud_opacity">Opacidade dos controles touch</string>
-    <string name="hud_size">Tamanho dos controles touch</string>
     <string name="launch_game">Iniciar jogo</string>
     <string name="game_running">Executando…</string>
     <string name="no_assets">Nenhum diretório de assets selecionado. Selecione a pasta contendo os arquivos do jogo antes de iniciar.</string>

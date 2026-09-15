@@ -1,9 +1,9 @@
 // ppc_runtime.h — bootstrap do código recompilado (guest PowerPC → ARM64)
 //
 // O XenonRecomp gera funções C++ que operam sobre um PPCContext + memória
-// base mapeada em 0x82000000. Este runtime:
-//  - Aloca a memória guest (imagem 23 MB + heap) e carrega o XEX do usuário
-//  - Constrói a perfect hash table de funções (ppc_func_mapping)
+// base ABSOLUTA (base + endereço guest). Este runtime:
+//  - Reserva a região virtual com mmap hint para base+0x82000000 ser válida
+//  - Carrega a imagem guest quando o loader (backlog) estiver integrado
 //  - Fornece o ponto de entrada da thread principal do guest
 #pragma once
 
@@ -19,22 +19,27 @@ namespace fh2::ppc {
 
 class PpcRuntime {
 public:
-    /** Aloca memória guest e prepara o mapeamento de funções. */
+    PpcRuntime() = default;
+    ~PpcRuntime(); // desmapeia a região guest
+
+    PpcRuntime(const PpcRuntime&) = delete;
+    PpcRuntime& operator=(const PpcRuntime&) = delete;
+
+    /** Reserva a memória guest (idempotente). */
     bool initialize(fs::FsProvider* fs);
 
     /**
      * Loop principal do guest (thread dedicada).
      * Fase atual (v0.1): subsistemas prontos; execução do guest depende da
-     * camada de kernel/IO (backlog). Aguarda stop e responde a pause.
+     * camada de kernel/IO (issue #16). Aguarda stop e responde a pause.
      */
     void run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
              input::InputState* input, fs::FsProvider* fs,
              std::atomic<bool>& stopRequested, std::atomic<bool>& paused);
 
 private:
-    uint8_t* guestMemory_ = nullptr;
-    size_t guestMemorySize_ = 0;
-    bool codeLoaded_ = false;
+    uintptr_t memBase_ = 0;   // início da reserva (hint 0x02000000)
+    uintptr_t guestBase_ = 0; // memBase_ + 0x82000000 (endereço guest 0)
 };
 
 } // namespace fh2::ppc

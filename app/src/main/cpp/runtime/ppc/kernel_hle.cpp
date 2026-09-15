@@ -1,6 +1,6 @@
 // kernel_hle.cpp — stubs HLE dos imports de xboxkrnl.exe/xam.xex usados pelo FH2
 //
-// GERADO por scripts/gen_kernel_hle.py — 388 símbolos exigidos por
+// GERADO por tools/gen_kernel_hle.py — 388 símbolos exigidos por
 // ppc_func_mapping.cpp (ld.lld para no limite de 20 erros, mas o conjunto
 // completo vem da análise do mapping). Cada stub: log-once + retorno padrão
 // de sucesso (NTSTATUS 0). Semântica real = issue #16. NÃO EDITAR À MÃO.

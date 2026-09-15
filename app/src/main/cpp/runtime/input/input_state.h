@@ -4,6 +4,9 @@
 //  1. HUD touch virtual (stick direção + botões)  — port 0
 //  2. Gamepad físico via GameController (BT/USB)  — ports 0..3
 //  3. Triggers analógicos de gamepad (AXIS_GAS/BRAKE) — acelerador/freio
+//
+// Todos os campos são atômicos: escrita nas threads de UI, leitura lock-free
+// na thread do guest (snapshot).
 #pragma once
 
 #include <array>
@@ -21,7 +24,7 @@ enum GuestButton : uint16_t {
     kA = 0x1000, kB = 0x2000, kX = 0x4000, kY = 0x8000,
 };
 
-struct ControllerState {
+struct ControllerSnapshot {
     uint16_t buttons = 0;
     float leftX = 0.f, leftY = 0.f;     // direção
     float rightX = 0.f, rightY = 0.f;   // câmera
@@ -42,14 +45,20 @@ public:
     void setGamepadAxis(int port, int androidAxisCode, float value);
 
     /** Snapshot atômico para a thread do guest. */
-    ControllerState snapshot(int port) const;
+    ControllerSnapshot snapshot(int port) const;
 
 private:
-    static ControllerState& slot(int port) {
-        static std::array<ControllerState, kMaxPorts> s{};
-        return s[port];
-    }
-    static std::array<std::atomic<int32_t>, kMaxPorts>& buttonMaskAtomic();
+    static constexpr float kDeadzone = 0.08f;
+    static float applyDeadzone(float v);
+
+    // Um slot atômico por port (evita tearing entre UI e guest)
+    struct PortState {
+        std::atomic<uint32_t> buttons{0};
+        std::atomic<float> leftX{0.f}, leftY{0.f};
+        std::atomic<float> rightX{0.f}, rightY{0.f};
+        std::atomic<float> leftTrigger{0.f}, rightTrigger{0.f};
+    };
+    static PortState& slot(int port);
 };
 
 } // namespace fh2::input

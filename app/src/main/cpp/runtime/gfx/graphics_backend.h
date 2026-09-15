@@ -32,6 +32,7 @@ public:
     // Configuração (persistida em SharedPreferences via app Java)
     virtual void setResolutionScale(int pct) = 0;
     virtual void setFpsTarget(int fps) = 0;
+    virtual int fpsTarget() const = 0;
 
     virtual const char* name() const = 0;
     virtual SurfaceInfo surfaceInfo() const = 0;

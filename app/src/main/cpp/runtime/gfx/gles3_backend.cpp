@@ -1,4 +1,9 @@
 // gles3_backend.cpp — backend GLES 3.1 (EGL)
+//
+// Ciclo de vida dos recursos: display/context são reutilizados entre
+// superfícies; a EGLSurface é destruída e recriada para cada ANativeWindow
+// (superfícies Android não são reutilizáveis). Toda destruição acontece em
+// onSurfaceLost()/destructor — sem leaks entre pause/resume.
 #include "gles3_backend.h"
 
 #include <android/log.h>
@@ -13,10 +18,21 @@ namespace fh2::gles3 {
 
 Gles3Backend::~Gles3Backend() { onSurfaceLost(); }
 
-bool Gles3Backend::makeContext(ANativeWindow* window) {
-    EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (display == EGL_NO_DISPLAY) return false;
-    if (!eglInitialize(display, nullptr, nullptr)) return false;
+bool Gles3Backend::ensureDisplay() {
+    if (display_ == EGL_NO_DISPLAY) {
+        display_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (display_ == EGL_NO_DISPLAY) return false;
+        if (!eglInitialize(display_, nullptr, nullptr)) {
+            display_ = EGL_NO_DISPLAY;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Gles3Backend::ensureContext() {
+    if (context_ != EGL_NO_CONTEXT) return true;
+    if (!ensureDisplay()) return false;
 
     const EGLint configAttribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
@@ -24,53 +40,68 @@ bool Gles3Backend::makeContext(ANativeWindow* window) {
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
         EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
         EGL_NONE};
-    EGLConfig config;
-    EGLint numConfigs = 0;
-    if (!eglChooseConfig(display, configAttribs, &config, 1, &numConfigs) || numConfigs < 1) {
+    if (!eglChooseConfig(display_, configAttribs, &config_, 1, &numConfigs_) || numConfigs_ < 1) {
         GLOG("eglChooseConfig falhou");
         return false;
     }
 
-    const EGLint surfaceAttribs[] = {EGL_NONE};
-    EGLSurface surface = eglCreateWindowSurface(display, config, window, surfaceAttribs);
-    if (surface == EGL_NO_SURFACE) {
-        GLOG("eglCreateWindowSurface falhou: 0x%x", eglGetError());
-        return false;
-    }
-
     const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-    EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttribs);
-    if (context == EGL_NO_CONTEXT) {
+    context_ = eglCreateContext(display_, config_, EGL_NO_CONTEXT, contextAttribs);
+    if (context_ == EGL_NO_CONTEXT) {
         GLOG("eglCreateContext falhou: 0x%x", eglGetError());
         return false;
     }
+    return true;
+}
 
-    if (!eglMakeCurrent(display, surface, surface, context)) {
+bool Gles3Backend::makeWindowSurface(ANativeWindow* window) {
+    if (!ensureDisplay() || !ensureContext()) return false;
+
+    // Superfície anterior pertence a uma ANativeWindow morta — destruir sempre.
+    if (surface_ != EGL_NO_SURFACE) {
+        eglDestroySurface(display_, surface_);
+        surface_ = EGL_NO_SURFACE;
+    }
+
+    const EGLint surfaceAttribs[] = {EGL_NONE};
+    surface_ = eglCreateWindowSurface(display_, config_, window, surfaceAttribs);
+    if (surface_ == EGL_NO_SURFACE) {
+        GLOG("eglCreateWindowSurface falhou: 0x%x", eglGetError());
+        return false;
+    }
+    if (!eglMakeCurrent(display_, surface_, surface_, context_)) {
         GLOG("eglMakeCurrent falhou: 0x%x", eglGetError());
         return false;
     }
-
     contextAlive_ = true;
-    GLOG("contexto GLES 3.1 criado: %s / %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
+    GLOG("superfície GLES 3.1 ativa: %s / %s", glGetString(GL_RENDERER), glGetString(GL_VERSION));
     return true;
 }
 
 bool Gles3Backend::onSurfaceAvailable(ANativeWindow* window, int width, int height) {
     width_ = int(float(width) * resolutionScale_.load() / 100.f);
     height_ = int(float(height) * resolutionScale_.load() / 100.f);
-    if (!contextAlive_) return makeContext(window);
-    // Superfície recriada: realoca buffers (contexto preservado quando possível)
-    GLOG("surface realloc: %dx%d (escala aplicada)", width_, height_);
-    return true;
+    return makeWindowSurface(window);
 }
 
 void Gles3Backend::onSurfaceLost() {
-    if (contextAlive_) {
-        EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-        contextAlive_ = false;
-        GLOG("surface perdida: contexto liberado");
+    if (display_ != EGL_NO_DISPLAY) {
+        eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (surface_ != EGL_NO_SURFACE) {
+            eglDestroySurface(display_, surface_);
+            surface_ = EGL_NO_SURFACE;
+        }
+        if (context_ != EGL_NO_CONTEXT) {
+            eglDestroyContext(display_, context_);
+            context_ = EGL_NO_CONTEXT;
+        }
+        eglTerminate(display_);
+        display_ = EGL_NO_DISPLAY;
     }
+    config_ = nullptr;
+    numConfigs_ = 0;
+    contextAlive_ = false;
+    GLOG("surface perdida: recursos EGL liberados");
 }
 
 } // namespace fh2::gles3

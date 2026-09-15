@@ -5,6 +5,11 @@
 //  - Fila de input (HUD touch + gamepad físico) consumida pelo guest
 //  - Bootstrap do PPC runtime e da thread principal do jogo recompilado
 //
+// Concorrência: boot roda na thread "fh2-boot" (GameSurfaceView) enquanto
+// stop/pause/resume/surface chegam da UI thread. Todo acesso ao estado global
+// é serializado por lifecycleMutex_ para eliminar as corridas boot×stop e
+// surface×stop. A thread do jogo só lê estado após o publish booted=true.
+//
 // O jogo recompilado só existe se recomp/generated estiver presente
 // (FH2_HAS_RECOMP=1). Sem ele, o app opera em modo shell (setup do usuário).
 
@@ -14,6 +19,7 @@
 #include <jni.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -30,6 +36,7 @@
 namespace {
 
 struct RuntimeState {
+    std::mutex lifecycleMutex;              // serializa boot/stop/surface
     std::atomic<bool> booted{false};
     std::atomic<bool> paused{false};
     std::atomic<bool> stopRequested{false};
@@ -41,6 +48,7 @@ struct RuntimeState {
     ANativeWindow* window = nullptr;
     int width = 0, height = 0;
     std::thread mainThread;
+    std::string filesDir;                   // setado antes do boot via JNI
 };
 
 RuntimeState& state() {
@@ -52,7 +60,7 @@ void gameMain(RuntimeState& s) {
     LOGI("gameMain: thread principal iniciada");
 #if FH2_HAS_RECOMP
     // Fase atual do projeto: runtime inicializa subsistemas e aciona o guest.
-    // A execução completa do guest exige a integração do kernel/IO (backlog).
+    // A execução completa do guest exige a integração do kernel/IO (issue #16).
     s.ppc->run(s.gfx.get(), s.audio.get(), &s.input, &s.fs, s.stopRequested, s.paused);
 #else
     // Modo shell: sem código recompilado, apenas sinaliza e aguarda stop.
@@ -68,28 +76,55 @@ void gameMain(RuntimeState& s) {
 
 extern "C" {
 
+JNIEXPORT void JNICALL
+Java_com_fh2recomp_nativebridge_NativeBridge_nativeSetFilesDir(
+        JNIEnv* env, jobject, jstring path) {
+    auto& s = state();
+    if (!path) return;
+    const char* p = env->GetStringUTFChars(path, nullptr);
+    if (!p) return;
+    {
+        std::lock_guard<std::mutex> lock(s.lifecycleMutex);
+        s.filesDir = p;
+        s.fs.setFilesDir(s.filesDir);
+    }
+    env->ReleaseStringUTFChars(path, p);
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
         JNIEnv* env, jobject, jstring assetsTreeUri, jint resolutionScalePct,
         jboolean fps60, jboolean useVulkan) {
     auto& s = state();
+    std::lock_guard<std::mutex> lock(s.lifecycleMutex);
     if (s.booted) return JNI_TRUE;
 
     const char* uri = assetsTreeUri ? env->GetStringUTFChars(assetsTreeUri, nullptr) : "";
     LOGI("nativeBoot: assets=%s scale=%d%% fps60=%d vulkan=%d",
-         uri, resolutionScalePct, fps60 ? 1 : 0, useVulkan ? 1 : 0);
+         uri ? uri : "", resolutionScalePct, fps60 ? 1 : 0, useVulkan ? 1 : 0);
 
-    s.fs.initialize(env, uri);
+    s.fs.setAssetsTreeUri(uri ? uri : "");
+    s.fs.initialize(env);
     s.gfx = fh2::gfx::createBackend(useVulkan != JNI_FALSE, resolutionScalePct);
+    if (s.gfx) s.gfx->setFpsTarget(fps60 != JNI_FALSE ? 60 : 30);
     s.audio = fh2::audio::AudioOutput::create();
     s.ppc = std::make_unique<fh2::ppc::PpcRuntime>();
-    s.ppc->initialize(&s.fs);
+    bool ok = s.ppc->initialize(&s.fs);
+
+    if (uri && assetsTreeUri) env->ReleaseStringUTFChars(assetsTreeUri, uri);
+
+    if (!ok) {
+        LOGE("nativeBoot: falha ao inicializar memória guest");
+        s.ppc.reset();
+        s.audio.reset();
+        s.gfx.reset();
+        return JNI_FALSE;
+    }
 
     s.booted = true;
     s.paused = false;
     s.stopRequested = false;
     s.mainThread = std::thread(gameMain, std::ref(s));
-    if (uri && assetsTreeUri) env->ReleaseStringUTFChars(assetsTreeUri, uri);
     return JNI_TRUE;
 }
 
@@ -97,7 +132,7 @@ JNIEXPORT void JNICALL
 Java_com_fh2recomp_nativebridge_NativeBridge_nativeSetSurface(
         JNIEnv* env, jobject, jobject surface, jint width, jint height) {
     auto& s = state();
-    if (!s.booted) return;
+    std::lock_guard<std::mutex> lock(s.lifecycleMutex);
     ANativeWindow* win = surface ? ANativeWindow_fromSurface(env, surface) : nullptr;
     if (s.window) ANativeWindow_release(s.window);
     s.window = win;
@@ -129,9 +164,14 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeResume(JNIEnv*, jobject) {
 JNIEXPORT void JNICALL
 Java_com_fh2recomp_nativebridge_NativeBridge_nativeStop(JNIEnv*, jobject) {
     auto& s = state();
-    if (!s.booted) return;
-    s.stopRequested = true;
+    {
+        std::lock_guard<std::mutex> lock(s.lifecycleMutex);
+        if (!s.booted) return;
+        s.stopRequested = true;
+    }
+    // join fora do lock: a thread do jogo não pega o lifecycleMutex
     if (s.mainThread.joinable()) s.mainThread.join();
+    std::lock_guard<std::mutex> lock(s.lifecycleMutex);
     if (s.window) { ANativeWindow_release(s.window); s.window = nullptr; }
     s.gfx.reset();
     s.audio.reset();

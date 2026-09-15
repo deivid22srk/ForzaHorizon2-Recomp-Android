@@ -7,6 +7,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,18 +44,15 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - name: Cache ferramentas de recompilação
+      - name: Cache ferramentas de recompilação (binários)
         uses: actions/cache@v4
         with:
           path: tools/build
           key: recomp-tools-${{ runner.os }}-v1
 
-      - name: Cache objetos nativos (chave = hash do XEX)
-        uses: actions/cache@v4
-        with:
-          path: app/.cxx
-          key: cxx-${{ runner.os }}-${{ github.event_name }}-v1
-          restore-keys: cxx-${{ runner.os }}-
+      # NOTA: sem cache de app/.cxx — o código gerado é recriado a cada run
+      # (novos mtimes ⇒ ninja recompilaria tudo de qualquer forma), e objetos
+      # restaurados com mtime novo silenciosamente pulariam TUs alterados.
 
       - name: Compilar ferramentas (XexTool, XenonAnalyse, XenonRecomp)
         run: |
@@ -61,6 +62,7 @@ jobs:
       - name: Baixar default.xex (repo privado via secrets.GH_PAT)
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          FH2_XEX_REPO: ${{ secrets.FH2_XEX_REPO }}
         run: |
           if [ -z "$GH_PAT" ]; then
             echo "::error::Secret GH_PAT ausente. Configure em Settings → Secrets and variables → Actions."
@@ -78,7 +80,12 @@ jobs:
       - name: Build APK (Debug)
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Build APK (Release)
+      - name: Build APK (Release) — assinado com keystore via secrets quando presente
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Upload APK Debug

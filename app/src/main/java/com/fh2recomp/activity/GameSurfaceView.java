@@ -62,7 +62,11 @@ public class GameSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        // Runtime solta a superfície; contexto gráfico pode ser perdido
-        if (bridge != null) bridge.nativePause();
+        // Runtime solta a superfície ANTES dela morrer (evita uso de window
+        // inválida e o leak de ANativeWindow); contexto pode ser recriado.
+        if (bridge != null) {
+            bridge.nativeSetSurface(null, 0, 0);
+            bridge.nativePause();
+        }
     }
 }

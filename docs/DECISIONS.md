@@ -107,3 +107,38 @@ Android mínimos (`android/log.h`, `jni.h`, `aaudio/AAudio.h`,
 e uma amostra estratificada do código gerado é compilada a objeto, com
 análise de símbolos indefinidos (nm). Objetivo: encurtar o ciclo de
 feedback sem depender de rodadas de CI de ~20 min.
+
+### D16 — Modelo de memória guest: mmap com hint fixa (revisão)
+O código gerado endereça memória de forma ABSOLUTA (`base + endereço guest`,
+com base = 0x82000000). A alocação original (~39 MB) era incompatível — o
+primeiro acesso cometeria wild pointer. Fix: `mmap` com hint em 0x02000000 e
+~2,25 GB MAP_NORESERVE → guest em 0x84000000, com espaço acima para a magic
+function table. O Android 64-bit honra hints livres; boot falha com log claro
+se o device negar o hint (comportamento explícito em vez de corrupção).
+
+### D17 — Concorrência do runtime serializada (revisão)
+boot (thread fh2-boot) × stop/pause/surface (UI thread) tinham corridas
+(UAF/orphan thread). Estado global agora serializado por lifecycleMutex;
+join do jogo fora do lock; superfície solta ANTES do pause (null surface).
+Eixos de input viraram atômicos (deadzone radial reescalada).
+
+### D18 — Multi-touch correto no HUD (revisão)
+O HUD original rastreava UM botão pressionado e usava getX() do pointer 0 —
+impossível dirigir+acelerar; soltar o gás quebrava a direção. Reescrito com
+pointer IDs por controle (SparseIntArray), stick segue SEU dedo, botões
+simultâneos, métricas em dp, opacidade aplicada ao alpha de cada cor e
+haptics nos botões.
+
+### D19 — SAF de verdade: cópia lazy (revisão)
+O fluxo anterior persistia o URI e `fopen()`-ava a string `content://`
+(impossível). Agora: `FsProvider::readFile` tenta o filesDir e, se ausente,
+chama `NativeBridge.copyFromSaf` (JNI) que percorre a árvore DocumentsContract
+e copia o arquivo único sob demanda — sem duplicar o jogo inteiro. Escritas
+atômicas (tmp+rename), guard anti-traversal, filesDir resolvido via JNI
+(compatível com o suffix .debug do build debug).
+
+### D20 — CI: cache .cxx removido + assinatura real (revisão)
+O cache de app/.cxx restaurava objetos com mtime novo → ninja poderia pular
+TUs alterados (build stale silencioso); removido. Release agora assina com
+keystore via secrets (KEYSTORE_BASE64/PASSWORD/ALIAS/KEY_PASSWORD) com
+fallback debug-signed (APK instalável). fetch_xex.sh aceita FH2_XEX_REPO (env).

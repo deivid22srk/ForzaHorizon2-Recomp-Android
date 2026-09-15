@@ -35,10 +35,28 @@ android {
         }
     }
 
+    // Assinatura release: keystore via secrets do CI (base64) quando presente;
+    // fallback = assinatura debug (APK instalável em qualquer device). Nenhum
+    // keystore é commitado.
+    def keystoreB64 = System.getenv("KEYSTORE_BASE64")
+    def ksFile = keystoreB64 ? File.createTempFile("fh2release", ".jks") : null
+    if (ksFile) {
+        ksFile.bytes = new ByteArrayInputStream(keystoreB64.decodeBase64())
+    }
+    signingConfigs {
+        if (keystoreB64) {
+            release {
+                storeFile ksFile
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS")
+                keyPassword System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
-            // Assinatura via secrets do CI quando disponível; sem keystore committed.
+            signingConfig keystoreB64 ? signingConfigs.release : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {

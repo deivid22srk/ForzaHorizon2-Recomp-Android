@@ -29,8 +29,12 @@ recompilando PowerPC → C++ → binário nativo, com runtime desenhado **mobile
 |---|---|
 | Pipeline XEX → análise → C++ | ✅ Funcional (128.081 funções geradas no CI) |
 | Ferramentas (XexTool/XenonAnalyse/XenonRecomp) | ✅ Compilam no CI |
-| App Android (UI, SAF, settings, ciclo de vida) | ✅ Funcional |
-| Runtime: GLES 3.1 (contexto, superfície) | ✅ |
+| App Android (UI, settings, ciclo de vida) | ✅ Funcional |
+| SAF: cópia lazy de arquivos do jogo sob demanda | ✅ Funcional |
+| HUD touch multi-touch (direção + pedais simultâneos) | ✅ Funcional |
+| Runtime: GLES 3.1 (contexto/superfície com ciclo completo) | ✅ |
+| Runtime: memória guest (mmap base+0x82000000) | ✅ |
+| Runtime: 388 stubs HLE de kernel (link do .so) | ✅ |
 | Runtime: AAudio (stream low-latency) | ✅ |
 | Input: HUD touch de direção + gamepad | ✅ |
 | Tradução D3D9/Xenos → Vulkan/GLES | 🚧 Em progresso |
@@ -88,7 +92,7 @@ docs/                       arquitetura, decisões, backlog
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — visão técnica e pipeline
 - [docs/DECISIONS.md](docs/DECISIONS.md) — log cronológico de decisões
 - [docs/BACKLOG.md](docs/BACKLOG.md) — 4.249 instruções não implementadas
-  (15 mnemônicos), kernel/IO, próximos passos
+  (65 mnemônicos — ver issue #9), kernel/IO, próximos passos
 
 ## Licença
 

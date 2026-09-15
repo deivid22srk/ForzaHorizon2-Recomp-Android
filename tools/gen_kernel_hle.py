@@ -37,7 +37,7 @@ FATAL = {'KeBugCheck', 'KeBugCheckEx', 'HalReturnToFirmware', 'RtlRaiseException
 
 hdr = f'''// kernel_hle.cpp — stubs HLE dos imports de xboxkrnl.exe/xam.xex usados pelo FH2
 //
-// GERADO por scripts/gen_kernel_hle.py — {len(needed)} símbolos exigidos por
+// GERADO por tools/gen_kernel_hle.py — {len(needed)} símbolos exigidos por
 // ppc_func_mapping.cpp (ld.lld para no limite de 20 erros, mas o conjunto
 // completo vem da análise do mapping). Cada stub: log-once + retorno padrão
 // de sucesso (NTSTATUS 0). Semântica real = issue #16. NÃO EDITAR À MÃO.
@@ -57,7 +57,6 @@ body = []
 for name in needed:
     note = NOTES.get(name, 'semântica real pendente (issue #16)')
     if name in FATAL:
-        lvl = 'HLOG("HLE FATAL: %s — %s", "%s", "%s");'
         body.append(f'// {name}: {note}')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
         body.append(f'    (void)base;')

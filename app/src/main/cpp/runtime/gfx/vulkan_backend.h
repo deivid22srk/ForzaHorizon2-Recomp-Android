@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <vulkan/vulkan.h>
 
 #include "graphics_backend.h"
 
@@ -22,6 +23,7 @@ public:
 
     void setResolutionScale(int pct) override { resolutionScale_ = pct; }
     void setFpsTarget(int fps) override { fpsTarget_ = fps; }
+    int fpsTarget() const override { return fpsTarget_.load(); }
 
     const char* name() const override { return "Vulkan"; }
     gfx::SurfaceInfo surfaceInfo() const override { return {uint32_t(width_), uint32_t(height_)}; }
@@ -32,6 +34,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool initialized_ = false;
+    VkInstance instance_ = VK_NULL_HANDLE;
 };
 
 } // namespace fh2::vulkan

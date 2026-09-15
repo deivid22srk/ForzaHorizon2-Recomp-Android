@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# fetch_xex.sh — baixa o default.xex do repositório privado (via GH_PAT)
+# fetch_xex.sh — baixa o default.xex do SEU repositório privado (via GH_PAT)
 # e o descriptografa para análise/recompilação.
 #
 # Uso: GH_PAT=ghp_xxx ./tools/fetch_xex.sh
 # No CI: token vem de secrets.GH_PAT (nunca hardcoded).
+#
+# O repositório de origem é configurável via FH2_XEX_REPO (env) — cada usuário
+# deve apontar para o SEU repositório privado contendo o XEX de SUA cópia legal.
+# O padrão abaixo é o repo privado do dono do projeto.
 set -euo pipefail
 
-REPO="deivid22srk/forza-horizon-2-xex"
+REPO="${FH2_XEX_REPO:-deivid22srk/forza-horizon-2-xex}"
 OUT_DIR="${1:-recomp/private}"
 XEX="$OUT_DIR/default.xex"
 DEC="$OUT_DIR/default_dec.xex"

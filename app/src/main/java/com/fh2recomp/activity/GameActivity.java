@@ -2,8 +2,12 @@ package com.fh2recomp.activity;
 
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.WindowManager;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.fh2recomp.R;
 import com.fh2recomp.input.GameControllerManager;
@@ -25,7 +29,15 @@ public class GameActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         setContentView(R.layout.activity_game);
+        // Tela cheia durante o jogo (barras ocultas, swipe para exibir)
+        WindowInsetsControllerCompat insets =
+                new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+        insets.hide(WindowInsetsCompat.Type.systemBars());
+        insets.setSystemBarsBehavior(
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         Uri assetsUri = getIntent().getData();
         int resolutionScale = getIntent().getIntExtra("resolution_scale", 75);
@@ -33,7 +45,13 @@ public class GameActivity extends AppCompatActivity {
         boolean useVulkan = getIntent().getBooleanExtra("use_vulkan", false);
         int hudOpacity = getIntent().getIntExtra("hud_opacity", 70);
 
+        // Contexto + URI SAF para a cópia lazy nativa, e filesDir para o FS
+        NativeBridge.setAppContext(getApplicationContext(),
+                assetsUri != null ? assetsUri.toString() : null);
+
         nativeBridge = new NativeBridge();
+        nativeBridge.nativeSetFilesDir(getFilesDir().getAbsolutePath());
+
         hud = findViewById(R.id.touch_hud);
         hud.setOpacity(hudOpacity / 100f);
         // Eventos do HUD alimentam o estado do "controller virtual" (port 0)
@@ -78,17 +96,29 @@ public class GameActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            WindowInsetsControllerCompat insets =
+                    new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+            insets.hide(WindowInsetsCompat.Type.systemBars());
+            insets.setSystemBarsBehavior(
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+    }
+
     // --- Gamepad físico (Bluetooth/USB): despacha para GameControllerManager ---
 
     @Override
     public boolean dispatchKeyEvent(android.view.KeyEvent event) {
-        if (GameControllerManager.handleKey(0, event)) return true;
+        if (GameControllerManager.handleKey(event.getDeviceId(), event)) return true;
         return super.dispatchKeyEvent(event);
     }
 
     @Override
     public boolean dispatchGenericMotionEvent(android.view.MotionEvent event) {
-        if (GameControllerManager.handleMotion(0, event)) return true;
+        if (GameControllerManager.handleMotion(event.getDeviceId(), event)) return true;
         return super.dispatchGenericMotionEvent(event);
     }
 }

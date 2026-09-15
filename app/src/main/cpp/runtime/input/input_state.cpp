@@ -1,24 +1,32 @@
 // input_state.cpp — implementação do estado de entrada
 //
-// Os botões do guest ficam em máscara atômica (leitura snapshot lock-free).
-// HUD touch e gamepad físico contribuem no mesmo estado (port 0).
+// Botões em máscara atômica; eixos em floats atômicos (relaxed) — escrita na
+// thread de UI, leitura lock-free na thread do guest. Deadzone radial no stick.
 #include "input_state.h"
 
 #include <android/input.h>
 #include <algorithm>
+#include <cmath>
 
 namespace fh2::input {
 
-std::array<std::atomic<int32_t>, InputState::kMaxPorts>& InputState::buttonMaskAtomic() {
-    static std::array<std::atomic<int32_t>, kMaxPorts> masks{};
-    return masks;
+InputState::PortState& InputState::slot(int port) {
+    static std::array<PortState, kMaxPorts> s{};
+    return s[port];
+}
+
+float InputState::applyDeadzone(float v) {
+    if (std::fabs(v) < kDeadzone) return 0.f;
+    // reescala para usar toda a faixa após a deadzone
+    float sign = v < 0.f ? -1.f : 1.f;
+    return sign * (std::fabs(v) - kDeadzone) / (1.f - kDeadzone);
 }
 
 // --- HUD virtual: TouchHudView.ButtonId → botões guest ---
 
 void InputState::setVirtualButton(int hudButtonId, bool pressed) {
-    int32_t bit = 0;
-    float* trigger = nullptr;
+    uint16_t bit = 0;
+    std::atomic<float>* trigger = nullptr;
     switch (hudButtonId) {
         case 0: trigger = &slot(0).rightTrigger; break;         // ACCEL (analógico ~1.0)
         case 1: trigger = &slot(0).leftTrigger; break;          // BRAKE
@@ -31,23 +39,26 @@ void InputState::setVirtualButton(int hudButtonId, bool pressed) {
         default: return;
     }
     if (trigger) {
-        *trigger = pressed ? 1.f : 0.f;
-    } else if (bit) {
-        auto& m = buttonMaskAtomic()[0];
-        if (pressed) m.fetch_or(bit);
-        else m.fetch_and(~bit);
+        trigger->store(pressed ? 1.f : 0.f, std::memory_order_relaxed);
+    } else {
+        auto& m = slot(0).buttons;
+        if (pressed) m.fetch_or(bit, std::memory_order_relaxed);
+        else m.fetch_and(uint32_t(~bit), std::memory_order_relaxed);
     }
 }
 
 void InputState::setVirtualStick(float x, float y) {
-    slot(0).leftX = std::clamp(x, -1.f, 1.f);
-    slot(0).leftY = std::clamp(y, -1.f, 1.f);
+    slot(0).leftX.store(applyDeadzone(std::clamp(x, -1.f, 1.f)), std::memory_order_relaxed);
+    slot(0).leftY.store(applyDeadzone(std::clamp(y, -1.f, 1.f)), std::memory_order_relaxed);
 }
 
 // --- Gamepad físico: Android codes → botões guest (mapa Xbox 360) ---
 
 void InputState::setGamepadButton(int port, int androidButtonCode, bool pressed) {
     if (port < 0 || port >= kMaxPorts) return;
+    auto& st = slot(port);
+    // L2/R2 digitais: alguns pads enviam como botão além do eixo analógico
+    std::atomic<float>* trigger = nullptr;
     uint16_t bit = 0;
     switch (androidButtonCode) {
         case AKEYCODE_BUTTON_A: bit = kA; break;
@@ -56,6 +67,8 @@ void InputState::setGamepadButton(int port, int androidButtonCode, bool pressed)
         case AKEYCODE_BUTTON_Y: bit = kY; break;      // câmera
         case AKEYCODE_BUTTON_L1: bit = kLB; break;    // câmbio -
         case AKEYCODE_BUTTON_R1: bit = kRB; break;    // câmbio +
+        case AKEYCODE_BUTTON_L2: trigger = &st.leftTrigger; break;
+        case AKEYCODE_BUTTON_R2: trigger = &st.rightTrigger; break;
         case AKEYCODE_BUTTON_START: bit = kStart; break;
         case AKEYCODE_BUTTON_SELECT: bit = kBack; break;
         case AKEYCODE_BUTTON_THUMBL: bit = kL3; break;
@@ -66,33 +79,54 @@ void InputState::setGamepadButton(int port, int androidButtonCode, bool pressed)
         case AKEYCODE_DPAD_RIGHT: bit = kDpadRight; break;
         default: return;
     }
-    auto& m = buttonMaskAtomic()[port];
-    if (pressed) m.fetch_or(bit);
-    else m.fetch_and(~bit);
+    if (trigger) {
+        trigger->store(pressed ? 1.f : 0.f, std::memory_order_relaxed);
+    } else {
+        auto& m = st.buttons;
+        if (pressed) m.fetch_or(bit, std::memory_order_relaxed);
+        else m.fetch_and(uint32_t(~bit), std::memory_order_relaxed);
+    }
 }
 
 void InputState::setGamepadAxis(int port, int androidAxisCode, float value) {
     if (port < 0 || port >= kMaxPorts) return;
-    auto& c = slot(port);
+    auto& st = slot(port);
     switch (androidAxisCode) {
-        case AMOTION_EVENT_AXIS_X: c.leftX = std::clamp(value, -1.f, 1.f); break;
-        case AMOTION_EVENT_AXIS_Y: c.leftY = std::clamp(value, -1.f, 1.f); break;
-        case AMOTION_EVENT_AXIS_Z: c.rightX = std::clamp(value, -1.f, 1.f); break;
-        case AMOTION_EVENT_AXIS_RZ: c.rightY = std::clamp(value, -1.f, 1.f); break;
-        case AMOTION_EVENT_AXIS_GAS: c.rightTrigger = std::clamp(value, 0.f, 1.f); break;
-        case AMOTION_EVENT_AXIS_BRAKE: c.leftTrigger = std::clamp(value, 0.f, 1.f); break;
-        default: break; // hat axis tratado como botões via KeyEvent
+        case AMOTION_EVENT_AXIS_X:  st.leftX.store(applyDeadzone(std::clamp(value, -1.f, 1.f)), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_Y:  st.leftY.store(applyDeadzone(std::clamp(value, -1.f, 1.f)), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_Z:  st.rightX.store(applyDeadzone(std::clamp(value, -1.f, 1.f)), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_RZ: st.rightY.store(applyDeadzone(std::clamp(value, -1.f, 1.f)), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_GAS:   st.rightTrigger.store(std::clamp(value, 0.f, 1.f), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_BRAKE: st.leftTrigger.store(std::clamp(value, 0.f, 1.f), std::memory_order_relaxed); break;
+        case AMOTION_EVENT_AXIS_HAT_X: {
+            uint32_t set = value > 0.5f ? kDpadRight : (value < -0.5f ? kDpadLeft : 0);
+            uint32_t clear = (kDpadLeft | kDpadRight) & ~set;
+            st.buttons.fetch_or(set, std::memory_order_relaxed);
+            st.buttons.fetch_and(~clear, std::memory_order_relaxed);
+            break;
+        }
+        case AMOTION_EVENT_AXIS_HAT_Y: {
+            uint32_t set = value > 0.5f ? kDpadDown : (value < -0.5f ? kDpadUp : 0);
+            uint32_t clear = (kDpadUp | kDpadDown) & ~set;
+            st.buttons.fetch_or(set, std::memory_order_relaxed);
+            st.buttons.fetch_and(~clear, std::memory_order_relaxed);
+            break;
+        }
+        default: break;
     }
 }
 
-ControllerState InputState::snapshot(int port) const {
+ControllerSnapshot InputState::snapshot(int port) const {
     if (port < 0 || port >= kMaxPorts) return {};
-    ControllerState s;
-    s.buttons = uint16_t(buttonMaskAtomic()[port].load());
-    const auto& src = slot(port);
-    s.leftX = src.leftX; s.leftY = src.leftY;
-    s.rightX = src.rightX; s.rightY = src.rightY;
-    s.leftTrigger = src.leftTrigger; s.rightTrigger = src.rightTrigger;
+    const auto& st = slot(port);
+    ControllerSnapshot s;
+    s.buttons = uint16_t(st.buttons.load(std::memory_order_relaxed));
+    s.leftX = st.leftX.load(std::memory_order_relaxed);
+    s.leftY = st.leftY.load(std::memory_order_relaxed);
+    s.rightX = st.rightX.load(std::memory_order_relaxed);
+    s.rightY = st.rightY.load(std::memory_order_relaxed);
+    s.leftTrigger = st.leftTrigger.load(std::memory_order_relaxed);
+    s.rightTrigger = st.rightTrigger.load(std::memory_order_relaxed);
     return s;
 }
 
