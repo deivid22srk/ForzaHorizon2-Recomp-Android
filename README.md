@@ -93,7 +93,7 @@ docs/                       arquitetura, decisões, backlog
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — visão técnica e pipeline
 - [docs/DECISIONS.md](docs/DECISIONS.md) — log cronológico de decisões
-- [docs/BACKLOG.md](docs/BACKLOG.md) — 4.249 instruções não implementadas
+- [docs/BACKLOG.md](docs/BACKLOG.md) — backlog de kernel/IO (instruções PPC: 0 não implementadas desde o fork fh2 do XenonRecomp)
   (65 mnemônicos — ver issue #9), kernel/IO, próximos passos
 
 ## Licença

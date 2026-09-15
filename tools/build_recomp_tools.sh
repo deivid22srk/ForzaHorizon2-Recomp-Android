@@ -15,9 +15,13 @@ cmake -S "$ROOT/tools/XexTool" -B "$ROOT/tools/XexTool/build" -DCMAKE_BUILD_TYPE
 cmake --build "$ROOT/tools/XexTool/build" -j"$(nproc)"
 cp "$ROOT/tools/XexTool/build/XexTool" "$TOOLS/XexTool"
 
-echo "== XenonRecomp (hedge-dev) =="
+echo "== XenonRecomp (fork deivid22srk, branch fh2: +65 mnemônicos PPC implementados) =="
+# Fork com os emitters completos (0 instruções não implementadas no FH2).
+# Override via env FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH se necessário.
+XENONRECOMP_REPO="${FH2_XENONRECOMP_REPO:-https://github.com/deivid22srk/XenonRecomp.git}"
+XENONRECOMP_BRANCH="${FH2_XENONRECOMP_BRANCH:-fh2}"
 if [[ ! -d "$ROOT/tools/XenonRecomp" ]]; then
-    git clone --recursive --depth 1 https://github.com/hedge-dev/XenonRecomp.git "$ROOT/tools/XenonRecomp"
+    git clone --recursive --depth 1 -b "$XENONRECOMP_BRANCH" "$XENONRECOMP_REPO" "$ROOT/tools/XenonRecomp"
 fi
 # GCC 14+: anonymous aggregates não podem ter membros com construtor
 grep -q "be<uint32_t> Error;" "$ROOT/tools/XenonRecomp/XenonUtils/xbox.h" && \

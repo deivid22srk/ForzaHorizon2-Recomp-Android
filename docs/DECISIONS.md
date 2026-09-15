@@ -159,3 +159,18 @@ byte do jogo é copiado para o storage do app. `FsProvider::readFile` vira:
 (1) fd direto SAF → (2) filesDir local (arquivo colocado à mão) → (3) cópia
 lazy legada (provider sem openFileDescriptor). Escritas (saves) continuam no
 filesDir do app — a pasta escolhida nunca é modificada.
+
+### D22 — Instruções PPC: 65 mnemônicos implementados no recompilador (fork fh2)
+O backlog de 4.249 sites foi erradicado na RAIZ: emitters reais no XenonRecomp
+(fork deivid22srk/XenonRecomp branch fh2, commit a062ef6), não stubs. Decisões
+de semântica documentadas no commit: (1) update-forms computam EA do rA
+original antes de gravar rA=EA; (2) bdzf = CTR==0 && !CR[BI] (bit REAL do BI —
+e fix do bdnzf upstream que assumia eq); (3) vsel/vsel128 = (A&C)|(B&~C)
+(PowerISA; upstream tinha C invertido); (4) CA de addc/addme/subfze segue o
+modelo bit-31 já usado por ADDE/ADDIC/ADDZE no upstream; (5) shifts de
+registrador inteiro (vsl/vslo/vsro +128) usam a decodificação QEMU do
+quantitativo no storage byte-reversed; (6) packs usam two-pass para serem
+alias-safe com vD==vA/vB; (7) frsqrte = 1/sqrt exato (dentro da margem da
+ISA; converge igual nas iterações de Newton-Raphson do jogo). CI clona o
+fork (FH2_XENONRECOMP_REPO/BH overrides). Validação: 503/503 TUs gerados
+compilam; 0 "Unrecognized instruction".

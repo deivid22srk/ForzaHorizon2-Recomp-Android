@@ -1,35 +1,21 @@
 # Backlog — instruções não implementadas e próximos passos
 
-## Warnings de recompilação (XenonRecomp v0.1)
+## Instruções PPC — RESOLVIDO (fork do XenonRecomp, branch fh2)
 
-Total: **4.249 sites** de "Unrecognized instruction" em **65 mnemônicos**
-distintos. Nenhum foi ignorado silenciosamente: o inventário completo está na
-issue #9 (tabela integral) e o agrupamento por família nas issues #10-#13.
-Top 15 por impacto:
+Estado anterior: 4.249 sites de "Unrecognized instruction" em 65 mnemônicos
+(inventário integral na issue #9, famílias nas issues #10-#13).
 
-| # | Instrução | Ocorrências | Tipo | Complexidade |
-|---|-----------|-------------|------|--------------|
-| 1 | `stfsu` | 865 | store FP com update | baixa (variante de stfs) |
-| 2 | `bdzf` | 695 | branch decrement if zero | média |
-| 3 | `lfsu` | 441 | load FP com update | baixa |
-| 4 | `sthu` | 364 | store halfword com update | baixa |
-| 5 | `lhzu` | 224 | load halfword com update | baixa |
-| 6 | `vsel128` | 147 | VMX128 select | média |
-| 7 | `eqv` | 134 | equivalent (NOT XOR) | baixa |
-| 8 | `subfze` | 101 | subtract from extended | média (carry) |
-| 9 | `lfsux` | 78 | load FP com update indexado | baixa |
-| 10 | `bso` | 65 | branch if summary overflow | média |
-| 11 | `stvlxl128` | 64 | VMX128 store least | média |
-| 12 | `lvxl128` | 64 | VMX128 load least | média |
-| 13 | `vaddsws` | 63 | VMX add signed saturate | média |
-| 14 | `vpkswss128` | 62 | VMX128 pack saturate | média |
-| 15 | `vslo128` | 60 | VMX128 shift left | média |
+**Resolvido em 2026-09-16**: os 65 mnemônicos foram implementados no
+próprio recompilador (fork deivid22srk/XenonRecomp, branch `fh2`, commit
+a062ef6) — load/store com update (D e X-form), família bdz*, bso/bns,
+addc/addme/subfze, eqv, mullhwu., todos os VMX/VMX128 ausentes (vsel/
+vsel128 com a semântica PowerISA corrigida, packs com two-pass alias-safe,
+shifts de registrador inteiro com decodificação QEMU, conversões
+fixpoint) e lvehx/lhbrx/dcbst/frsqrte. Validação: regeneração completa
+(503 TUs) compila 100% no host (g++ -fsyntax-only + amostra -c).
 
-**Nota**: os mnemônicos `xxx128` são o conjunto VMX128 do Xenon (aliases de
-instruções VMX com operandos estendidos); o XenonRecomp os reporta porque a
-tabela de aliases está incompleta. Implementá-los no recompilador elimina os
-~4.249 pontos de `PPC_BREAK` gerados. Rastreamento: #9 (umbrella), #10-#13
-(famílias).
+O pipeline (tools/build_recomp_tools.sh) clona o fork automaticamente;
+override via FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH.
 
 ## Kernel/IO (runtime)
 
