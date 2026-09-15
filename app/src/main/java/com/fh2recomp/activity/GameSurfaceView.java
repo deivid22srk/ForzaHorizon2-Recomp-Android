@@ -1,6 +1,7 @@
 package com.fh2recomp.activity;
 
 import android.content.Context;
+import android.util.AttributeSet;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -22,6 +23,13 @@ public class GameSurfaceView extends SurfaceView implements SurfaceHolder.Callba
 
     public GameSurfaceView(Context context) {
         super(context);
+        getHolder().addCallback(this);
+    }
+
+    /** Construtor exigido pela inflação via XML (activity_game.xml) — sem ele,
+     *  a GameActivity fecha com NoSuchMethodException ao abrir. */
+    public GameSurfaceView(Context context, AttributeSet attrs) {
+        super(context, attrs);
         getHolder().addCallback(this);
     }
 
