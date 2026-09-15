@@ -142,3 +142,20 @@ O cache de app/.cxx restaurava objetos com mtime novo → ninja poderia pular
 TUs alterados (build stale silencioso); removido. Release agora assina com
 keystore via secrets (KEYSTORE_BASE64/PASSWORD/ALIAS/KEY_PASSWORD) com
 fallback debug-signed (APK instalável). fetch_xex.sh aceita FH2_XEX_REPO (env).
+
+### D21 — SAF: leitura DIRETA por fd (sem cópia) + fix de takePersistableUriPermission
+Bug de produção: ao escolher a pasta, o app fechava com
+`IllegalArgumentException: Requested flags 0x41, but only 0x3 are allowed` —
+o mask de `takePersistableUriPermission` incluía FLAG_GRANT_PERSISTABLE (0x40),
+que NÃO é aceito pela API (só READ|WRITE), e o catch cobria só SecurityException.
+Correção: mask = flags do intent & (READ|WRITE); catch amplia para
+IllegalArgumentException (ROMs excêntricas).
+
+Leitura: `NativeBridge.openSaf(guestPath)` resolve o caminho na árvore
+DocumentsContract (cache por caminho, invalidado em setAppContext), abre via
+`openFileDescriptor("r")` e devolve fd cru (`detachFd`); o native lê com
+`pread` (tolera fd não-seekable com leitura incremental) e fecha — NENHUM
+byte do jogo é copiado para o storage do app. `FsProvider::readFile` vira:
+(1) fd direto SAF → (2) filesDir local (arquivo colocado à mão) → (3) cópia
+lazy legada (provider sem openFileDescriptor). Escritas (saves) continuam no
+filesDir do app — a pasta escolhida nunca é modificada.

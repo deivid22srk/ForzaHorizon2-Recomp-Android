@@ -1,4 +1,4 @@
-// fs_provider.cpp — resolução SAF (cópia lazy) + I/O atômico
+// fs_provider.cpp — leitura DIRETA da árvore SAF (sem cópia) + I/O atômico
 #include "fs_provider.h"
 
 #include <android/log.h>
@@ -16,12 +16,27 @@ void FsProvider::initialize(JNIEnv* env) {
     if (!env) return;
     if (env->GetJavaVM(&jvm_) != JNI_OK) { jvm_ = nullptr; return; }
 
-    // NativeBridge (classe do callback de cópia lazy)
+    // NativeBridge: fd direto (openSaf) + fallback de cópia (copyFromSaf)
     jclass cls = env->FindClass("com/fh2recomp/nativebridge/NativeBridge");
-    if (!cls) { FLOGE("NativeBridge não encontrada p/ callback SAF"); env->ExceptionClear(); return; }
+    if (!cls) { FLOGE("NativeBridge não encontrada p/ callbacks SAF"); env->ExceptionClear(); return; }
+    bridgeClass_ = static_cast<jclass>(env->NewGlobalRef(cls));
+    openSafMethod_ = env->GetStaticMethodID(cls, "openSaf", "(Ljava/lang/String;)I");
+    if (!openSafMethod_) { FLOGE("openSaf não encontrado (leitura direta indisponível)"); env->ExceptionClear(); }
     copyMethod_ = env->GetStaticMethodID(cls, "copyFromSaf", "(Ljava/lang/String;)Z");
-    if (!copyMethod_) { FLOGE("método copyFromSaf não encontrado"); env->ExceptionClear(); }
+    if (!copyMethod_) { FLOGE("copyFromSaf não encontrado (fallback indisponível)"); env->ExceptionClear(); }
     env->DeleteLocalRef(cls);
+}
+
+// Anexa a thread atual à JVM se necessário (chamadas vêm da thread do guest).
+JNIEnv* FsProvider::attachEnv(bool& attached) const {
+    attached = false;
+    if (!jvm_) return nullptr;
+    JNIEnv* env = nullptr;
+    if (jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        if (jvm_->AttachCurrentThread(&env, nullptr) != JNI_OK) return nullptr;
+        attached = true;
+    }
+    return env;
 }
 
 // Rejeita traversal: "..", caminhos absolutos e componentes vazios
@@ -45,57 +60,110 @@ bool FsProvider::resolvePath(const std::string& guestPath, std::string& out) con
     return true;
 }
 
-bool FsProvider::copyFromSaf(const std::string& guestPath) const {
-    if (!jvm_ || !copyMethod_) return false;
-    JNIEnv* env = nullptr;
+// fd DIRETO da árvore SAF: o Java resolve o caminho (cache de diretórios),
+// abre via ContentResolver e devolve um fd detached. O native lê com pread e
+// fecha — NENHUM byte é copiado para o storage do app.
+int FsProvider::openSafDirect(const std::string& guestPath) const {
     bool attached = false;
-    if (jvm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        if (jvm_->AttachCurrentThread(&env, nullptr) != JNI_OK) return false;
-        attached = true;
+    JNIEnv* env = attachEnv(attached);
+    if (!env || !bridgeClass_ || !openSafMethod_) return -1;
+    int fd = -1;
+    jstring jpath = env->NewStringUTF(guestPath.c_str());
+    if (jpath) {
+        fd = env->CallStaticIntMethod(bridgeClass_, openSafMethod_, jpath);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); fd = -1; }
+        env->DeleteLocalRef(jpath);
     }
+    if (attached) jvm_->DetachCurrentThread();
+    return fd;
+}
+
+// Último recurso (providers sem openFileDescriptor): copia via Java p/ filesDir.
+bool FsProvider::copyFromSaf(const std::string& guestPath) const {
+    bool attached = false;
+    JNIEnv* env = attachEnv(attached);
     bool ok = false;
-    if (env) {
+    if (env && bridgeClass_ && copyMethod_) {
         jstring jpath = env->NewStringUTF(guestPath.c_str());
         if (jpath) {
-            ok = env->CallStaticBooleanMethod(env->FindClass("com/fh2recomp/nativebridge/NativeBridge"),
-                                              copyMethod_, jpath) == JNI_TRUE;
+            ok = env->CallStaticBooleanMethod(bridgeClass_, copyMethod_, jpath) == JNI_TRUE;
             if (env->ExceptionCheck()) { env->ExceptionClear(); ok = false; }
             env->DeleteLocalRef(jpath);
         }
-        jclass cls = env->FindClass("com/fh2recomp/nativebridge/NativeBridge");
-        if (cls) env->DeleteLocalRef(cls);
     }
     if (attached) jvm_->DetachCurrentThread();
-    if (ok) FLOG("cópia lazy SAF ok: %s", guestPath.c_str());
-    else FLOGE("cópia lazy SAF falhou: %s", guestPath.c_str());
+    if (ok) FLOG("fallback cópia lazy: %s", guestPath.c_str());
+    else FLOGE("leitura indisponível: %s", guestPath.c_str());
     return ok;
+}
+
+// Consome um fd inteiro (ou apenas sonda presença se maxBytes>0).
+// Tolerante a fds não-seekable (providers virtuais): leitura incremental.
+static bool readFdFully(int fd, std::vector<uint8_t>& out, size_t maxBytes) {
+    if (maxBytes > 0) { out.clear(); return true; } // sonda: abriu = existe
+    off_t end = lseek(fd, 0, SEEK_END);
+    if (end >= 0) {
+        size_t size = size_t(end);
+        if (lseek(fd, 0, SEEK_SET) < 0) return false;
+        out.resize(size);
+        size_t total = 0;
+        while (total < size) {
+            ssize_t n = pread(fd, out.data() + total, size - total, off_t(total));
+            if (n <= 0) return false;
+            total += size_t(n);
+        }
+        return true;
+    }
+    out.clear();
+    uint8_t buf[256 * 1024];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+        out.insert(out.end(), buf, buf + size_t(n));
+    return !out.empty();
+}
+
+bool FsProvider::readLocal(const std::string& path, std::vector<uint8_t>& out,
+                           size_t maxBytes) const {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) { fclose(f); return false; }
+    if (maxBytes > 0) {
+        // sondagem de presença: não carrega conteúdo
+        fclose(f);
+        out.resize(0);
+        return true;
+    }
+    out.resize(size_t(size));
+    size_t rd = fread(out.data(), 1, size_t(size), f);
+    fclose(f);
+    return rd == size_t(size);
 }
 
 bool FsProvider::readFile(const std::string& guestPath, std::vector<uint8_t>& out,
                           size_t maxBytes) const {
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        std::string path;
-        if (!resolvePath(guestPath, path)) return false;
-        FILE* f = fopen(path.c_str(), "rb");
-        if (!f) {
-            if (attempt == 0 && !assetsUri_.empty() && copyFromSaf(guestPath)) continue;
-            return false;
+    if (!isSafeGuestPath(guestPath)) return false;
+
+    // (1) DIRETO da árvore SAF — caminho padrão, sem cópia para o app
+    if (!assetsUri_.empty() && openSafMethod_) {
+        int fd = openSafDirect(guestPath);
+        if (fd >= 0) {
+            bool ok = readFdFully(fd, out, maxBytes);
+            close(fd);
+            if (ok) return true;
+            FLOGE("fd SAF devolveu dados incompletos: %s", guestPath.c_str());
         }
-        fseek(f, 0, SEEK_END);
-        long size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (size < 0) { fclose(f); return false; }
-        if (maxBytes > 0) {
-            // sondagem de presença: não carrega conteúdo
-            fclose(f);
-            out.resize(0);
-            return true;
-        }
-        out.resize(size_t(size));
-        size_t rd = fread(out.data(), 1, size_t(size), f);
-        fclose(f);
-        if (rd == size_t(size)) return true;
     }
+    // (2) Local em filesDir — arquivos colocados manualmente ou cópias antigas
+    std::string path;
+    if (resolvePath(guestPath, path) && readLocal(path, out, maxBytes)) return true;
+
+    // (3) Último recurso: cópia lazy via Java (provider sem openFileDescriptor)
+    if (!assetsUri_.empty() && copyFromSaf(guestPath) &&
+        resolvePath(guestPath, path) && readLocal(path, out, maxBytes)) return true;
+
     return false;
 }
 

@@ -30,7 +30,7 @@ recompilando PowerPC → C++ → binário nativo, com runtime desenhado **mobile
 | Pipeline XEX → análise → C++ | ✅ Funcional (128.081 funções geradas no CI) |
 | Ferramentas (XexTool/XenonAnalyse/XenonRecomp) | ✅ Compilam no CI |
 | App Android (UI, settings, ciclo de vida) | ✅ Funcional |
-| SAF: cópia lazy de arquivos do jogo sob demanda | ✅ Funcional |
+| SAF: leitura DIRETA da pasta escolhida (fd via ContentResolver, sem cópia p/ o app) | ✅ Funcional |
 | HUD touch multi-touch (direção + pedais simultâneos) | ✅ Funcional |
 | Runtime: GLES 3.1 (contexto/superfície com ciclo completo) | ✅ |
 | Runtime: memória guest (mmap base+0x82000000) | ✅ |
@@ -65,7 +65,9 @@ tools/run_recomp.sh         # análise + recomp → recomp/generated/
 ## Uso no Android
 
 1. Instale o APK (side-load; Android 10+).
-2. Selecione a pasta dos arquivos do jogo (SAF) na primeira execução.
+2. Selecione a pasta dos arquivos do jogo (SAF) na primeira execução — os
+   arquivos são lidos **diretamente da pasta escolhida**, sem cópia para
+   dentro do app (só os saves ficam no storage do app).
 3. Controles: **touch** (analógico virtual à esquerda = direção; GAS/FREIO à
    direita; MÃO = freio de mão; C+/C- = câmbio) ou **gamepad físico**
    (triggers analógicos = acelerador/freio, LB/RB = câmbio, X = freio de mão).

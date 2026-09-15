@@ -36,47 +36,82 @@ public final class NativeBridge {
     public native void nativeSetFilesDir(String path);
 
     /**
-     * Cópia lazy: copia o arquivo guestPath da árvore SAF persistida para o
-     * app-specific storage (chamado PELO NATIVE quando um readFile falha).
+     * Acesso DIRETO ao arquivo na árvore SAF — SEM copiar para o app.
+     * Resolve guestPath dentro da árvore persistida (cache de diretórios),
+     * abre via ContentResolver e devolve um fd cru (detachFd) que o native
+     * lê com pread e fecha. Se o provider não suportar openFileDescriptor,
+     * o native cai para copyFromSaf (fallback legado).
+     *
+     * @return fd >= 0 se aberto (propriedade do native); -1 se ausente/falhou
+     */
+    public static int openSaf(String guestPath) {
+        android.content.Context ctx = appContext;
+        if (ctx == null || assetsTreeUri == null) return -1;
+        try {
+            android.net.Uri file = resolveSaf(guestPath);
+            if (file == null) return -1;
+            android.os.ParcelFileDescriptor pfd =
+                    ctx.getContentResolver().openFileDescriptor(file, "r");
+            if (pfd == null) return -1;
+            return pfd.detachFd(); // ownership passa ao native
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "openSaf falhou: " + guestPath, e);
+            return -1;
+        }
+    }
+
+    /**
+     * Resolve caminho relativo dentro da árvore SAF (DocumentId por nível,
+     * cacheado — a árvore do jogo não muda durante a sessão).
+     */
+    private static android.net.Uri resolveSaf(String guestPath) throws Exception {
+        synchronized (safCacheLock) {
+            android.net.Uri hit = safCache.get(guestPath);
+            if (hit != null) return hit;
+        }
+        android.content.Context ctx = appContext;
+        android.net.Uri tree = android.net.Uri.parse(assetsTreeUri);
+        android.net.Uri current = android.provider.DocumentsContract.buildDocumentUriUsingTree(
+                tree, android.provider.DocumentsContract.getTreeDocumentId(tree));
+        // desce pelos diretórios intermediários (se existirem)
+        String[] parts = guestPath.split("/");
+        for (int i = 0; i < parts.length - 1; i++) {
+            current = findChild(ctx, current, parts[i], true);
+            if (current == null) return null;
+        }
+        android.net.Uri file = findChild(ctx, current, parts[parts.length - 1], false);
+        if (file != null) {
+            synchronized (safCacheLock) { safCache.put(guestPath, file); }
+        }
+        return file;
+    }
+
+    /**
+     * Fallback legado: copia o arquivo guestPath da árvore SAF persistida
+     * para o app-specific storage (chamado PELO NATIVE apenas quando a
+     * leitura direta por fd não é suportada pelo provider).
      * @return true se o arquivo foi copiado e está legível em filesDir
      */
     public static boolean copyFromSaf(String guestPath) {
         android.content.Context ctx = appContext;
         if (ctx == null || assetsTreeUri == null) return false;
         try {
-            android.net.Uri tree = android.net.Uri.parse(assetsTreeUri);
-            android.net.Uri doc = android.provider.DocumentsContract.buildDocumentUriUsingTree(
-                    tree, android.provider.DocumentsContract.getTreeDocumentId(tree));
-            // caminho pode ter subdiretórios: procura recursivamente pelo nome
-            return copyRecursive(ctx, doc, guestPath);
+            android.net.Uri file = resolveSaf(guestPath);
+            if (file == null) return false;
+            java.io.File out = new java.io.File(ctx.getFilesDir(), guestPath);
+            java.io.File parent = out.getParentFile();
+            if (parent != null && !parent.isDirectory()) parent.mkdirs();
+            try (java.io.InputStream in = ctx.getContentResolver().openInputStream(file);
+                 java.io.OutputStream os = new java.io.FileOutputStream(out)) {
+                byte[] buf = new byte[256 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            }
+            return out.length() > 0;
         } catch (Exception e) {
             android.util.Log.w(TAG, "copyFromSaf falhou: " + guestPath, e);
             return false;
         }
-    }
-
-    private static boolean copyRecursive(android.content.Context ctx, android.net.Uri dirDoc,
-                                         String guestPath) throws Exception {
-        String[] parts = guestPath.split("/");
-        android.net.Uri current = dirDoc;
-        // desce pelos diretórios intermediários (se existirem)
-        for (int i = 0; i < parts.length - 1; i++) {
-            android.net.Uri child = findChild(ctx, current, parts[i], true);
-            if (child == null) return false;
-            current = child;
-        }
-        android.net.Uri file = findChild(ctx, current, parts[parts.length - 1], false);
-        if (file == null) return false;
-        java.io.File out = new java.io.File(ctx.getFilesDir(), guestPath);
-        java.io.File parent = out.getParentFile();
-        if (parent != null && !parent.isDirectory()) parent.mkdirs();
-        try (java.io.InputStream in = ctx.getContentResolver().openInputStream(file);
-             java.io.OutputStream os = new java.io.FileOutputStream(out)) {
-            byte[] buf = new byte[256 * 1024];
-            int n;
-            while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-        }
-        return out.length() > 0;
     }
 
     private static android.net.Uri findChild(android.content.Context ctx, android.net.Uri parent,
@@ -103,11 +138,15 @@ public final class NativeBridge {
     private static android.content.Context appContext;
     private static String assetsTreeUri;
     private static final String TAG = "FH2/Bridge";
+    /** Cache de resolução SAF (caminho relativo → URI do documento). */
+    private static final java.util.HashMap<String, android.net.Uri> safCache = new java.util.HashMap<>();
+    private static final Object safCacheLock = new Object();
 
     /** Chamado pela GameActivity antes do boot. */
     public static void setAppContext(android.content.Context context, String safUri) {
         appContext = context.getApplicationContext();
         assetsTreeUri = safUri;
+        synchronized (safCacheLock) { safCache.clear(); }
     }
 
     /** Botão virtual do HUD (códigos em TouchHudView.ButtonId). */

@@ -36,12 +36,17 @@ public class MainActivity extends AppCompatActivity {
                 if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
                     Uri uri = result.getData().getData();
                     if (uri != null) {
-                        // Persiste a permissão de leitura na árvore selecionada (SAF)
+                        // Persiste a permissão na árvore selecionada (SAF).
+                        // O mask do takePersistableUriPermission aceita APENAS
+                        // READ|WRITE: incluir FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                        // lança IllegalArgumentException ("Requested flags 0x41, but
+                        // only 0x3 are allowed") e fechava o app ao escolher a pasta.
                         final int takeFlags = result.getData().getFlags()
-                                & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                                & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                   | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                         try {
                             getContentResolver().takePersistableUriPermission(uri, takeFlags);
-                        } catch (SecurityException ignored) {
+                        } catch (SecurityException | IllegalArgumentException ignored) {
                         }
                         assetsUri = uri;
                         prefs.edit().putString("assets_uri", uri.toString()).apply();
