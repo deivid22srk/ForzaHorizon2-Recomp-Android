@@ -22,7 +22,7 @@ public final class GameControllerManager {
      *
      * Envia o keycode Android BRUTO ao runtime — a tradução para o formato do
      * guest (máscara XInput-like) vive no native (input_state.cpp), que conhece
-     * AKEYCODE_BUTTON_*/AKEYCODE_DPAD_* e mantém um único mapa canônico.
+     * os códigos AKEYCODE_BUTTON_x e AKEYCODE_DPAD_x e mantém um único mapa canônico.
      */
     public static boolean handleKey(int port, KeyEvent e) {
         int keyCode = e.getKeyCode();
