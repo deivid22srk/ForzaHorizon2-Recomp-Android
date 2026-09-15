@@ -2,9 +2,10 @@
 
 ## Warnings de recompilação (XenonRecomp v0.1)
 
-Total: **4.249 sites** de "Unrecognized instruction" em 15 mnemônicos
-distintos (contagem de `recomp.log` da execução de referência). Nenhum foi
-ignorado silenciosamente: cada mnemônico abaixo é um item rastreável.
+Total: **4.249 sites** de "Unrecognized instruction" em **65 mnemônicos**
+distintos. Nenhum foi ignorado silenciosamente: o inventário completo está na
+issue #9 (tabela integral) e o agrupamento por família nas issues #10-#13.
+Top 15 por impacto:
 
 | # | Instrução | Ocorrências | Tipo | Complexidade |
 |---|-----------|-------------|------|--------------|
@@ -27,7 +28,8 @@ ignorado silenciosamente: cada mnemônico abaixo é um item rastreável.
 **Nota**: os mnemônicos `xxx128` são o conjunto VMX128 do Xenon (aliases de
 instruções VMX com operandos estendidos); o XenonRecomp os reporta porque a
 tabela de aliases está incompleta. Implementá-los no recompilador elimina os
-~4.249 pontos de `PPC_BREAK` gerados.
+~4.249 pontos de `PPC_BREAK` gerados. Rastreamento: #9 (umbrella), #10-#13
+(famílias).
 
 ## Kernel/IO (runtime)
 
@@ -40,7 +42,8 @@ tabela de aliases está incompleta. Implementá-los no recompilador elimina os
       (microcode) → SPIR-V/GLSL; pipeline cache persistente em disco
 - [ ] **Streaming de mundo**: gerenciador de memória mobile (FH2 é open-world
       com streaming constante)
-- [ ] **Setjmp/longjmp**: identificar endereços (issue #4)
+- [ ] **Setjmp/longjmp**: identificar endereços (issue #15)
+- [ ] **Jump tables**: detecção para o padrão do compilador do FH2 (issue #14)
 
 ## Infra
 

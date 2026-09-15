@@ -32,7 +32,7 @@ caminho absoluto no TOML produz path inválido → `LoadFile` vazio →
 Execução limpa (15,6 s, exit 0), mas zero tabelas — a heurística é calibrada
 para o padrão de compilador do Sonic Unleashed. Impacto: funções com jump
 tables viram saltos indiretos genéricos (e boundaries podem ser imprecisos).
-Backlog [#2]: estender a detecção (busca por `mtctr r0; bctr` com padrões do
+Backlog [#5]: estender a detecção (busca por `mtctr r0; bctr` com padrões do
 compilador do FH2) ou fornecer boundaries manuais para as funções críticas.
 
 ### D6 — setjmp/longjmp omitidos do TOML
@@ -71,3 +71,39 @@ funcional (readme do XenonRecomp recomenda otimizações por último).
 `-Wl,-z,max-page-size=16384` no link do `.so` (exigência do Android 15 para
 ARM64) e `useLegacyPackaging true` para garantir `.so` extraído (APK
 side-load em qualquer device).
+
+## 2026-09-15 — Sessão de correções de build (continuação)
+
+### D11 — Shims GCC no ppc_context.h (builtins do Clang)
+O código gerado usa `__builtin_rotateleft32/64`, `__builtin_assume` e
+`__builtin_debugtrap` (exclusivos do Clang) e assume `__rdtsc` de headers
+de sistema em x86. O CI (NDK/clang, ARM64) cobre tudo nativamente, mas o
+header agora provê shims GCC (rotação portátil com cuidado de shift por 0,
+`__builtin_trap`, `<x86intrin.h>`), permitindo compilar o código gerado com
+g++ localmente. Caminho Clang/ARM64 permanece idêntico.
+
+### D12 — simde resolvido do clone do XenonRecomp
+`ppc_context.h` inclui `<x86/avx.h>` (simde) — sem isso nem o CI compila.
+O CMake agora busca simde em `tools/XenonRecomp/thirdparty/simde` (já clonado
+por `build_recomp_tools.sh`) ou `app/src/main/cpp/thirdparty/simde`, e falha
+com mensagem clara se `FH2_HAS_RECOMP=1` e simde não existir.
+
+### D13 — libvulkan explícita no link
+O backend Vulkan chama `vkCreateInstance`/`vkEnumeratePhysicalDevices`
+diretamente: sem `find_library(vulkan-lib vulkan)` o link do `.so` falharia
+no CI (detectado na análise de símbolos do harness local).
+
+### D14 — Keycode canônico no native
+O mapeamento gamepad Android→guest foi unificado: Java envia o keycode
+Android bruto (`e.getKeyCode()`) e o native (`input_state.cpp`) mantém o
+único mapa canônico (AKEYCODE_BUTTON_x/DPAD → máscara XInput-like). Elimina
+dupla tradução e divergência entre Java e C++. Eventos chegam via
+`dispatchKeyEvent`/`dispatchGenericMotionEvent` na GameActivity.
+
+### D15 — Harness local de validação (hostcheck)
+Antes de cada push, o runtime passa por `-fsyntax-only` no g++ com stubs
+Android mínimos (`android/log.h`, `jni.h`, `aaudio/AAudio.h`,
+`android/input.h` com constantes reais) + headers reais Vulkan/EGL (Khronos)
+e uma amostra estratificada do código gerado é compilada a objeto, com
+análise de símbolos indefinidos (nm). Objetivo: encurtar o ciclo de
+feedback sem depender de rodadas de CI de ~20 min.

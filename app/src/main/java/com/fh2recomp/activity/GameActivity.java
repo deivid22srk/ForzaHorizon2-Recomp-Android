@@ -6,6 +6,7 @@ import android.os.Bundle;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.fh2recomp.R;
+import com.fh2recomp.input.GameControllerManager;
 import com.fh2recomp.input.TouchHudView;
 import com.fh2recomp.nativebridge.NativeBridge;
 
