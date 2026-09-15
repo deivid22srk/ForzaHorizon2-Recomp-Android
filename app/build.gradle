@@ -66,4 +66,14 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.preference:preference:1.2.1'
     implementation 'androidx.activity:activity:1.9.3'
+
+    // Resolve conflito kotlin-stdlib-jdk8 1.6.21 (transitivo) vs kotlin-stdlib 1.8.22
+    constraints {
+        implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22') {
+            because 'alinhamento com kotlin-stdlib 1.8.22'
+        }
+        implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22') {
+            because 'alinhamento com kotlin-stdlib 1.8.22'
+        }
+    }
 }
