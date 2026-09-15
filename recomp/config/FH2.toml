@@ -33,4 +33,14 @@ restvmx_64_address = 0x82c0276c
 savevmx_64_address = 0x82c024d4
 
 # setjmp/longjmp: não identificados com os padrões atuais — omitidos.
-# Consequência: SjLj/exceptions do guest não funcionam (backlog, issue #4).
+# Consequência: SjLj/exceptions do guest não funcionam (backlog, issue #15).
+
+# Boundaries explícitos: funções cujo fim real excede o tamanho do .pdata
+# (hot/cold splits do compilador). Sem isto, o branch vira `goto loc_XXXX`
+# para um label fora da função → erro de compilação no C++ gerado.
+#  - sub_82C2A798: branches de laço (bdz/bdnz) para 0x82C2A840 e 0x82C2A974
+#  - sub_82C5C320: branch para 0x82C5C5BC
+functions = [
+    { address = 0x82C2A798, size = 0x1E0 },
+    { address = 0x82C5C320, size = 0x2A0 },
+]
