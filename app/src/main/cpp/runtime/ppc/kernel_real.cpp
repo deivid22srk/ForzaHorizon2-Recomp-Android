@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <unistd.h>
@@ -54,7 +55,12 @@ inline void w64(uint8_t* b, uint64_t a, uint64_t v) {
 }
 
 inline bool validGuest(uint64_t a, uint64_t n = 4) {
-    return guestMem() && a != 0 && a + n <= guestMemBytes();
+    // O guest usa EAs de 32 bits; registradores 64-bit podem conter extensão
+    // de sinal (ex.: 0xFFFFFFFF820CF1CC) que o endereçamento real ignora —
+    // mascara para 32 bits antes de validar (mesma semântica do PPC_EA do
+    // código gerado).
+    const uint64_t a32 = (uint32_t)a;
+    return guestMem() && a32 != 0 && a32 + n <= guestMemBytes();
 }
 
 // ----- varargs da ABI Xenon: inteiros r4..r10 (r3 = fmt/fixo), depois
@@ -152,6 +158,10 @@ constexpr uint32_t STATUS_UNSUCCESSFUL = 0xC0000001;
 constexpr uint32_t STATUS_ACCESS_VIOLATION = 0xC0000005;
 
 thread_local uint64_t t_kthreadBlock = 0; // bloco real p/ o KTHREAD opaco
+
+// blocos-opaco por handle de ObReferenceObjectByHandle (estáveis)
+std::map<uint32_t, uint64_t> g_obBlocks;
+std::mutex g_obM;
 
 } // namespace
 
@@ -824,6 +834,103 @@ void real_KeResumeThread(PPCContext& ctx, uint8_t* base) {
     if (!ok) RLOG("KeResumeThread(0x%08X): handle desconhecido", h);
 }
 
+// NtResumeThread/NtSuspendThread: contagem de suspensão REAL (a thread do
+// jogo é criada SUSPENSA e só executa após a contagem chegar a 0).
+void real_NtResumeThread(PPCContext& ctx, uint8_t* base) {
+    const uint32_t h = ctx.r3.u32;
+    GuestThread* t = findThread(h);
+    if (!t) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    // PULONG PreviousSuspendCount (r4)
+    const uint32_t prev = t->suspendCount.fetch_sub(1);
+    if (validGuest(ctx.r4.u32, 4)) w32(base, ctx.r4.u32, prev);
+    if (prev <= 1) {
+        std::lock_guard<std::mutex> lk(t->startM);
+        t->started = true;
+        t->startCv.notify_all();
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+    static Throttle t1;
+    if (t1.shouldLog(8, 256)) {
+        RLOG("NtResumeThread(0x%08X) prev=%u", h, prev);
+    }
+}
+
+void real_NtSuspendThread(PPCContext& ctx, uint8_t* base) {
+    const uint32_t h = ctx.r3.u32;
+    GuestThread* t = findThread(h);
+    if (!t) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    const uint32_t prev = t->suspendCount.fetch_add(1);
+    if (validGuest(ctx.r4.u32, 4)) w32(base, ctx.r4.u32, prev);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_KeSetAffinityThread(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, KAFFINITY affinity, PKAFFINITY PreviousAffinity) — o Xenon tem
+    // 6 cores; registramos a afinidade pedida (efeito de agendamento é do
+    // host) e devolvemos a anterior real (todas as cores: 0x3F).
+    if (validGuest(ctx.r5.u32, 4)) w32(base, ctx.r5.u32, 0x3F);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_KeSetBasePriorityThread(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, LONG Priority, PLONG PreviousPriority)
+    if (validGuest(ctx.r5.u32, 4)) w32(base, ctx.r5.u32, 2);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_ObReferenceObjectByHandle(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, ACCESS_MASK, ..., PVOID* Object) — devolve um ponteiro-opaco
+    // ESTÁVEL em memória guest REAL por handle (o guest trata como opaco e o
+    // repassa de volta ao kernel; não há layout a preservar).
+    const uint32_t h = ctx.r3.u32;
+    const uint64_t pOut = ctx.r5.u32;
+    if (!validGuest(pOut, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // bloco por handle: estável enquanto o objeto existir
+    uint64_t block;
+    {
+        std::lock_guard<std::mutex> lk(g_obM);
+        uint64_t& b = g_obBlocks[h];
+        if (b == 0) b = heap().alloc(0x200, 32);
+        block = b;
+    }
+    w32(base, pOut, (uint32_t)block);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_ObDereferenceObject(PPCContext& ctx, uint8_t* base) {
+    ctx.r3.u32 = STATUS_SUCCESS; // contagem interna — nada visível ao guest
+}
+
+void real_XGetAVPack(PPCContext& ctx, uint8_t* base) {
+    // Valor real de console com HDMI (o jogo usa p/ configurar o display)
+    ctx.r3.u32 = 6; // XEX_AV_PACK_HDMI
+}
+
+void real_ExGetXConfigSetting(PPCContext& ctx, uint8_t* base) {
+    // (ULONG Category, ULONG Setting, PVOID Buffer, ULONG Size, PULONG pcbOut)
+    const uint64_t buffer = ctx.r5.u32;
+    const uint32_t size = ctx.r6.u32;
+    const uint64_t pcbOut = ctx.r7.u32;
+    if (!validGuest(buffer, size) || !validGuest(pcbOut, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // configurações zeradas = defaults de fábrica (vídeo: auto/720p; sem
+    // perfil, sem rede configurada). O jogo prossegue com o padrão.
+    memset(base + buffer, 0, size);
+    w32(base, pcbOut, size);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
 void real_KeGetCurrentThread(PPCContext& ctx, uint8_t* base) {
     // Ponteiro-opaco estável por thread em memória guest REAL (o guest pode
     // escrever campos do KTHREAD sem corromper nada de terceiros).
@@ -1273,16 +1380,8 @@ void real_XamGetCurrentTitleId(PPCContext& ctx, uint8_t* base) {
 }
 
 // Boot frio real: SEM launch data (nenhum convite/continue/dashboard args).
-// XamLoaderGetLaunchDataSize: *pcb = 0, ERROR_SUCCESS — o título segue o
-// caminho normal de boot; XamLoaderGetLaunchData: ERROR_NOT_FOUND.
-void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base) {
-    if (validGuest(ctx.r3.u64, 4)) w32(base, ctx.r3.u64, 0);
-    ctx.r3.u32 = 0; // ERROR_SUCCESS
-}
-
-void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
-    ctx.r3.u32 = 0x80070490u; // ERROR_NOT_FOUND — estado real (sem dados)
-}
+// (XamLoaderGetLaunchData/Size — implementações reais completas adiante,
+//  junto de SetLaunchData/LaunchTitle/TerminateTitle)
 
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0; // sem perfil assinado (estado real v1: offline)
@@ -1343,21 +1442,32 @@ static bool peFindSection(uint8_t* base, uint32_t hModule,
 }
 
 void real_XexGetModuleHandle(PPCContext& ctx, uint8_t* base) {
-    // (HANDLE hModule /*0 = executável atual*/, PHANDLE pOut)
-    const uint32_t hIn = ctx.r3.u32;
+    // (PCSZZ pszModuleName /*NULL = executável atual*/, PHANDLE phModule)
+    // No console o handle de um módulo é a base do header XEX dele. Aqui:
+    // executável → imageBase; "xam.xex"/"xboxkrnl.exe" → handle do módulo
+    // virtual registrado no boot; nome desconhecido → executável (o título
+    // nunca depende do handle além de opacidade + XexGetProcedureAddress).
+    const uint64_t pName = ctx.r3.u64;
     uint64_t pOut = ctx.r4.u32;
     if (!validGuest(pOut, 4)) pOut = ctx.r3.u32; // variante de 1 argumento
     if (!validGuest(pOut, 4)) {
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    // handle real = base da imagem do módulo (0 para o título)
-    const uint32_t handle = imageBase();
+    uint32_t handle = imageBase();
+    if (pName != 0) {
+        const std::string name = readGuestCString(pName, 64);
+        if (!name.empty()) {
+            const kern::KernelModule* m = kern::findModuleByName(name);
+            if (m) handle = m->handle;
+        }
+    }
     w32(base, pOut, handle);
     ctx.r3.u32 = STATUS_SUCCESS;
     static Throttle t;
     if (t.shouldLog(4, 512)) {
-        RLOG("XexGetModuleHandle(hIn=0x%08X) = 0x%08X", hIn, handle);
+        RLOG("XexGetModuleHandle(pName=0x%08llX) = 0x%08X",
+             (unsigned long long)pName, handle);
     }
 }
 
@@ -1396,6 +1506,130 @@ void real_XexGetModuleSection(PPCContext& ctx, uint8_t* base) {
     RLOG("XexGetModuleSection: '%s' não existe no módulo 0x%08X", name.c_str(),
          hModule);
     ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+// ------------------------------------------------- XamLoader (loader XAM)
+
+void real_XamLoaderSetLaunchData(PPCContext& ctx, uint8_t* base) {
+    // (PVOID lpBuffer, DWORD cbSize) — guarda os dados de launch do título.
+    const uint64_t data = ctx.r3.u64;
+    uint32_t size = ctx.r4.u32;
+    if (size > 512) size = 512; // XAM_LAUNCH_DATA real: 512 bytes
+    if (size && !validGuest(data, size)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    setLaunchData(size ? base + data : nullptr, size);
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
+}
+
+void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
+    // (PVOID lpBuffer, DWORD cbSize) — copia os dados de launch (se houver).
+    const uint64_t buf = ctx.r3.u64;
+    const uint32_t bufLen = ctx.r4.u32;
+    uint8_t tmp[512];
+    const uint32_t size = getLaunchData(tmp, sizeof(tmp));
+    if (size == 0) {
+        ctx.r3.u32 = 0x80070490u; // ERROR_NOT_FOUND (boot frio — real)
+        return;
+    }
+    if (!validGuest(buf, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // copia min(size, bufLen) — como o kernel real
+    const uint32_t copy = size < bufLen ? size : bufLen;
+    if (copy) memcpy(base + buf, tmp, copy);
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
+}
+
+void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base) {
+    // (PDWORD pcbSize) — tamanho dos dados de launch; sem dados: *pcb = 0 e
+    // ERROR_NOT_FOUND (o título distingue boot frio de relaunch com dados).
+    const uint32_t size = getLaunchDataSize();
+    if (validGuest(ctx.r3.u64, 4)) w32(base, ctx.r3.u64, size);
+    ctx.r3.u32 = size ? 0 : 0x80070490u; // ERROR_SUCCESS : ERROR_NOT_FOUND
+}
+
+void real_XamLoaderLaunchTitle(PPCContext& ctx, uint8_t* base) {
+    // (LPCSTR pszPath, DWORD dwFlags) — NÃO RETORNA no console: o kernel
+    // termina o título e o XAM o relança com o launch data preservado.
+    // O runtime (PpcRuntime::run) faz o relaunch com estado zerado.
+    const std::string path = readGuestCString(ctx.r3.u64, 512);
+    const uint32_t flags = ctx.r4.u32;
+    RLOG("XamLoaderLaunchTitle(\"%s\", flags=0x%08X) — encerrando título p/ "
+         "relançar (não retorna)", path.c_str(), flags);
+    requestTitleRelaunch(path, flags);
+    jmp_buf* env = unwindTarget();
+    if (env) longjmp(*env, 2); // unwind da thread chamadora — sem retorno
+}
+
+void real_XamLoaderTerminateTitle(PPCContext& ctx, uint8_t* base) {
+    // () — NÃO RETORNA: encerra o título ativo.
+    RLOG("XamLoaderTerminateTitle() — encerrando título (não retorna)");
+    terminateTitle();
+    jmp_buf* env = unwindTarget();
+    if (env) longjmp(*env, 2);
+}
+
+// ------------------------------------------------- Xex* (módulos)
+
+void real_XexLoadImage(PPCContext& ctx, uint8_t* base) {
+    // (PCSZZ pszName, DWORD dwFlags, DWORD dwMinimumVersion, PHANDLE pHandle)
+    // Módulos de SISTEMA (xam.xex, xboxkrnl.exe) existem sempre no console:
+    // aqui são módulos VIRTUAIS com as exports que o título importa (stubs
+    // reais na imagem — ver registro no boot). Qualquer outro nome falha
+    // como no console (arquivo inexistente no volume do sistema).
+    const std::string name = readGuestCString(ctx.r3.u64, 64);
+    const uint64_t pHandle = ctx.r6.u64;
+    if (name.empty() || !validGuest(pHandle, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    const uint32_t handle = registerModule(name, 0, {});
+    w32(base, pHandle, handle);
+    ctx.r3.u32 = STATUS_SUCCESS;
+    RLOG("XexLoadImage(\"%s\", flags=0x%X) = 0x%08X", name.c_str(),
+         ctx.r4.u32, handle);
+}
+
+void real_XexUnloadImage(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE hModule) — módulos de sistema permanecem carregados (real).
+    const uint32_t h = ctx.r3.u32;
+    if (!findModuleByHandle(h)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_XexGetProcedureAddress(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE hModule, DWORD ordinal, PVOID* ppAddress) — devolve o VA do
+    // stub do import (nop;nop;nop;blr) que a tabela mágica resolve para o
+    // HLE — exatamente o endereço que o console devolveria p/ a função real.
+    const uint32_t h = ctx.r3.u32;
+    const uint32_t ordinal = ctx.r4.u32;
+    const uint64_t pOut = ctx.r5.u64;
+    if (!validGuest(pOut, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    const KernelModule* m = findModuleByHandle(h);
+    if (!m) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    auto it = m->exports.find(ordinal);
+    if (it == m->exports.end()) {
+        RLOG("XexGetProcedureAddress(0x%08X «%s», %u) = PROCEDURE_NOT_FOUND",
+             h, m->name.c_str(), ordinal);
+        ctx.r3.u32 = 0xC000007Au; // STATUS_PROCEDURE_NOT_FOUND
+        return;
+    }
+    w32(base, pOut, it->second);
+    ctx.r3.u32 = STATUS_SUCCESS;
+    RLOG("XexGetProcedureAddress(0x%08X «%s», %u) = stub 0x%08X", h,
+         m->name.c_str(), ordinal, it->second);
 }
 
 void real_XexCheckExecutablePrivilege(PPCContext& ctx, uint8_t* base) {

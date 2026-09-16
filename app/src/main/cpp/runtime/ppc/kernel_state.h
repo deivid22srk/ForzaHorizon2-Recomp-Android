@@ -14,7 +14,9 @@
 #include <atomic>
 #include <condition_variable>
 #include <csetjmp>
+#include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <memory>
@@ -60,6 +62,7 @@ struct GuestThread {
     std::mutex startM;
     std::condition_variable startCv;
     bool started = false;        // KeResumeThread libera
+    std::atomic<uint32_t> suspendCount{1}; // criada SUSPENSA (kernel real)
     std::atomic<bool> finished{false};
     jmp_buf unwindEnv;           // alvo do longjmp no stop
     std::atomic<bool> envValid{false};
@@ -101,8 +104,57 @@ uint32_t createThread(uint64_t stackSize, uint64_t startRoutine,
                       uint64_t startContext, uint32_t* outId);
 /** NtResumeThread/KeResumeThread. */
 bool resumeThread(uint32_t handle);
+
+/** Suspende a thread (contagem real; a parada efetiva ocorre no próximo
+ *  ponto de bloqueio do guest — suspensão preemptiva de código recompilado
+ *  exigiria checkpoints por instrução). Retorna a contagem anterior (UINT32_MAX
+ *  se handle desconhecido). */
+uint32_t suspendThread(uint32_t handle);
 /** Término do próprio thread (ExTerminateThread/HalReturnToFirmware). */
 void terminateCurrentThread(uint32_t exitCode);
+
+// --------------------------------- título: launch/terminate/relaunch
+//
+// Semântica real do XAM (o launcher do FH2 depende disto):
+//   XamLoaderSetLaunchData(data,size)  — guarda os dados de launch
+//   XamLoaderLaunchTitle(path,flags)   — NÃO RETORNA: o kernel termina o
+//       título e o XAM o relança com launch data preservado
+//   XamLoaderTerminateTitle()          — NÃO RETORNA: termina o título
+//
+// O relaunch reexecuta o guest do entry com estado zerado (threads, heap,
+// waitables, TLS, arquivos), mantendo APENAS o launch data — o boot do
+// título o lê via XamLoaderGetLaunchData (isso é o que dá o boot 2 do
+// launcher do FH2: launcher → launch → jogo).
+
+/** XamLoaderSetLaunchData: guarda até 512 bytes (tamanho real do título). */
+void setLaunchData(const uint8_t* data, uint32_t size);
+/** XamLoaderGetLaunchData: copia para out (até maxLen). Retorna o tamanho
+ *  real (0 = sem dados — boot frio). */
+uint32_t getLaunchData(uint8_t* out, uint32_t maxLen);
+/** Tamanho atual do launch data (0 = nenhum). */
+uint32_t getLaunchDataSize();
+
+/** Pedido de relaunch com path/flags (XamLoaderLaunchTitle). O caminho é
+ *  informativo (o título é sempre o mesmo XEX); flags ficam disponíveis
+ *  para o log/estado. */
+void requestTitleRelaunch(const std::string& path, uint32_t flags);
+/** true se o título pediu relaunch e ainda não foi consumido. */
+bool titleRelaunchRequested();
+/** Consome o pedido de relaunch (o runtime reinicia o guest). */
+bool consumeTitleRelaunch(std::string& pathOut, uint32_t& flagsOut);
+
+/** Encerramento do título ativo (threads guest desligam nos próximos
+ *  pontos de bloqueio; a thread chamadora sofre unwind imediato). */
+void terminateTitle();
+/** true após terminateTitle até o reset do estado. */
+bool titleTerminated();
+
+/** Reset do estado do título p/ relaunch REAL: threads, waitables, handles
+ *  Nt*, arquivos, TLS do kernel, heap/janelas de alocação e flags de
+ *  encerramento — PRESERVA o launch data. O guest re-executa o CRT do
+ *  zero, então nada do boot anterior pode sobreviver. */
+void resetTitleState();
+
 /** Pedido global de parada: acorda todos os waits e dispara unwind. */
 void requestStop();
 std::vector<std::shared_ptr<GuestThread>> allThreads();
@@ -180,6 +232,31 @@ struct KernelResource {
 };
 void setImageResources(const KernelResource* res, size_t count);
 const KernelResource* findImageResource(const char* id);
+
+// ------------------------------------------- módulos XEX carregados
+//
+// No console, xam.xex/xboxkrnl.exe são SEMPRE carregados. O runtime os
+// representa como módulos VIRTUAIS: as exports que o título importa têm
+// stubs reais na imagem (nop;nop;nop;blr — resolvidos pela tabela mágica
+// p/ os __imp__ HLE). XexGetProcedureAddress devolve o VA do stub; chamar
+// esse VA executa o HLE — exatamente como o console devolve o endereço da
+// função real e o título chama indiretamente.
+struct KernelModule {
+    std::string name;                 // "xam.xex", "xboxkrnl.exe", "default.xex"
+    uint32_t handle = 0;              // handle opaco estável
+    uint32_t imageBase = 0;           // 0 p/ módulos virtuais sem imagem
+    std::map<uint32_t, uint32_t> exports; // ordinal → VA do stub (guest)
+};
+/** Registra/atualiza um módulo (chamado no boot com os imports decodados
+ *  do XEX). handle 0 → aloca. Retorna o handle. */
+uint32_t registerModule(const std::string& name, uint32_t handle,
+                        std::map<uint32_t, uint32_t> exports);
+/** Busca por nome (case-insensitive, sem caminho — "xam.xex"). */
+KernelModule* findModuleByName(const std::string& name);
+/** Busca por handle (nullptr se inválido). */
+KernelModule* findModuleByHandle(uint32_t handle);
+/** Handle do executável do título (0x82000000). */
+uint32_t executableModuleHandle();
 
 // ---------------------------------------------------- arquivos abertos
 

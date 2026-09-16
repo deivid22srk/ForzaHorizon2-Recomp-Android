@@ -222,6 +222,19 @@ void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
     }
     kern::setUnwindTarget(nullptr);
 
+    if (kern::titleTerminated()) {
+        // Título encerrado (XamLoaderLaunchTitle/XamLoaderTerminateTitle):
+        // junta as threads guest (o g_stop desligou os waits) e devolve o
+        // controle ao runtime — que decide o relaunch (boot 2 do launcher).
+        const size_t alive = kern::joinAll(3000);
+        if (alive > 0) {
+            GLOG("título: %zu thread(s) guest não saíram no encerramento "
+                 "(unwind no próximo ponto de bloqueio)", alive);
+        }
+        GLOG("título encerrado pelo XAM (launch data preservado p/ relaunch)");
+        return;
+    }
+
     // Threads guest continuam vivas até stop; em stop elas recebem o unwind
     // pelos waits/delays (kernel_state::requestStop). Espera um ciclo para
     // o encerramento limpo antes de liberar quem depende da memória.

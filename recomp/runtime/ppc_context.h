@@ -43,20 +43,26 @@ static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? 
 
 #define PPC_FUNC_PROLOGUE() __builtin_assume(((size_t)base & 0x1F) == 0)
 
+// ESPAÇO DE ENDEREÇAMENTO 32-bit (semântica real do Xenon): o espaço do
+// título tem 4 GB de EAs; registradores 64-bit podem conter extensão de
+// sinal (ex.: 0xFFFFFFFF80F20000) que o guest espera que seja ignorada no
+// endereçamento — mascarar o EA para 32 bits em TODOS os acessos.
+#define PPC_EA(x) ((uint32_t)(x))
+
 #ifndef PPC_LOAD_U8
-#define PPC_LOAD_U8(x) *(volatile uint8_t*)(base + (x))
+#define PPC_LOAD_U8(x) *(volatile uint8_t*)(base + PPC_EA(x))
 #endif
 
 #ifndef PPC_LOAD_U16
-#define PPC_LOAD_U16(x) __builtin_bswap16(*(volatile uint16_t*)(base + (x)))
+#define PPC_LOAD_U16(x) __builtin_bswap16(*(volatile uint16_t*)(base + PPC_EA(x)))
 #endif
 
 #ifndef PPC_LOAD_U32
-#define PPC_LOAD_U32(x) __builtin_bswap32(*(volatile uint32_t*)(base + (x)))
+#define PPC_LOAD_U32(x) __builtin_bswap32(*(volatile uint32_t*)(base + PPC_EA(x)))
 #endif
 
 #ifndef PPC_LOAD_U64
-#define PPC_LOAD_U64(x) __builtin_bswap64(*(volatile uint64_t*)(base + (x)))
+#define PPC_LOAD_U64(x) __builtin_bswap64(*(volatile uint64_t*)(base + PPC_EA(x)))
 #endif
 
 // TODO: Implement.
@@ -80,19 +86,19 @@ static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? 
 #endif
 
 #ifndef PPC_STORE_U8
-#define PPC_STORE_U8(x, y) *(volatile uint8_t*)(base + (x)) = (y)
+#define PPC_STORE_U8(x, y) *(volatile uint8_t*)(base + PPC_EA(x)) = (y)
 #endif
 
 #ifndef PPC_STORE_U16
-#define PPC_STORE_U16(x, y) *(volatile uint16_t*)(base + (x)) = __builtin_bswap16(y)
+#define PPC_STORE_U16(x, y) *(volatile uint16_t*)(base + PPC_EA(x)) = __builtin_bswap16(y)
 #endif
 
 #ifndef PPC_STORE_U32
-#define PPC_STORE_U32(x, y) *(volatile uint32_t*)(base + (x)) = __builtin_bswap32(y)
+#define PPC_STORE_U32(x, y) *(volatile uint32_t*)(base + PPC_EA(x)) = __builtin_bswap32(y)
 #endif
 
 #ifndef PPC_STORE_U64
-#define PPC_STORE_U64(x, y) *(volatile uint64_t*)(base + (x)) = __builtin_bswap64(y)
+#define PPC_STORE_U64(x, y) *(volatile uint64_t*)(base + PPC_EA(x)) = __builtin_bswap64(y)
 #endif
 
 // MMIO Store handling is completely reliant on being preeceded by eieio.

@@ -47,12 +47,24 @@ uint32_t g_nextHandle = 0xA0000000;
 void* g_tls[64] = {};
 bool g_tlsUsed[64] = {};
 
+// --- módulos XEX carregados (virtuais p/ xam.xex/xboxkrnl.exe) ---
+std::map<std::string, KernelModule> g_modules; // nome (lowercase) → módulo
+uint32_t g_nextModuleHandle = 0x8F000001;
+
 // --- identidade de thread (kernel) ---
 std::atomic<uint32_t> g_nextKernelThreadId{2}; // 1 = thread principal
 thread_local uint32_t t_kernelThreadId = 0; // 0 = ainda não atribuído
 
 // --- stop ---
 std::atomic<bool> g_stop{false};
+
+// --- título: launch/terminate/relaunch (semântica real do XAM) ---
+std::mutex g_launchM;
+std::vector<uint8_t> g_launchData;            // XamLoaderSetLaunchData
+std::string g_launchPath;                     // XamLoaderLaunchTitle
+uint32_t g_launchFlags = 0;
+std::atomic<bool> g_relaunchRequested{false};
+std::atomic<bool> g_titleTerminated{false};
 
 // Um ÚNICO mutex+cv para TODOS os waitables: elimina classes inteiras de
 // deadlock (ordem de locks) e de wakeup perdido (wait-all em cvs distintos).
@@ -81,7 +93,10 @@ uint8_t* guestMem() { return g_guestMem; }
 uint64_t guestMemBytes() { return g_guestMemBytes; }
 
 bool guestPtrValid(uint64_t addr, uint64_t bytes) {
-    return g_guestMem && addr != 0 && addr + bytes <= g_guestMemBytes;
+    // mask 32-bit: registradores 64-bit do guest carregam extensão de sinal
+    // (0xFFFFFFFF8xxxxxxx) que o endereçamento real do Xenon ignora.
+    const uint64_t a32 = (uint32_t)addr;
+    return g_guestMem && a32 != 0 && a32 + bytes <= g_guestMemBytes;
 }
 uint32_t readGuestU32(uint64_t addr) {
     if (!guestPtrValid(addr, 4)) return 0;
@@ -142,12 +157,26 @@ bool resumeThread(uint32_t handle) {
         if (it == g_threads.end()) return false;
         t = it->second;
     }
+    // contagem de suspensão REAL: só inicia quando chega a 0
+    const uint32_t prev = t->suspendCount.fetch_sub(1);
+    if (prev > 1) return true; // ainda suspenso (N níveis)
     {
         std::lock_guard<std::mutex> lk(t->startM);
         t->started = true;
     }
     t->startCv.notify_all();
     return true;
+}
+
+uint32_t suspendThread(uint32_t handle) {
+    std::shared_ptr<GuestThread> t;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        auto it = g_threads.find(handle);
+        if (it == g_threads.end()) return 0xFFFFFFFFu;
+        t = it->second;
+    }
+    return t->suspendCount.fetch_add(1);
 }
 
 GuestThread* findThread(uint32_t handle) {
@@ -392,6 +421,139 @@ const KernelResource* findImageResource(const char* id) {
     return nullptr;
 }
 
+// --------------------------------------- título: launch/terminate/relaunch
+
+void setLaunchData(const uint8_t* data, uint32_t size) {
+    std::lock_guard<std::mutex> lk(g_launchM);
+    if (!data || size == 0) {
+        g_launchData.clear();
+        return;
+    }
+    if (size > 512) size = 512; // XAM_LAUNCH_DATA real: 512 bytes
+    g_launchData.assign(data, data + size);
+}
+
+uint32_t getLaunchData(uint8_t* out, uint32_t maxLen) {
+    std::lock_guard<std::mutex> lk(g_launchM);
+    if (g_launchData.empty()) return 0;
+    const uint32_t n = (uint32_t)g_launchData.size();
+    if (out && maxLen) {
+        const uint32_t copy = n < maxLen ? n : maxLen;
+        memcpy(out, g_launchData.data(), copy);
+    }
+    return n;
+}
+
+uint32_t getLaunchDataSize() {
+    std::lock_guard<std::mutex> lk(g_launchM);
+    return (uint32_t)g_launchData.size();
+}
+
+void requestTitleRelaunch(const std::string& path, uint32_t flags) {
+    {
+        std::lock_guard<std::mutex> lk(g_launchM);
+        g_launchPath = path;
+        g_launchFlags = flags;
+    }
+    g_relaunchRequested = true;
+    // Encerra o título: as threads guest desligam nos próximos pontos de
+    // bloqueio (o mesmo mecanismo do stop — ver terminateTitle()).
+    terminateTitle();
+}
+
+bool titleRelaunchRequested() { return g_relaunchRequested; }
+
+bool consumeTitleRelaunch(std::string& pathOut, uint32_t& flagsOut) {
+    if (!g_relaunchRequested.exchange(false)) return false;
+    std::lock_guard<std::mutex> lk(g_launchM);
+    pathOut = g_launchPath;
+    flagsOut = g_launchFlags;
+    return true;
+}
+
+void terminateTitle() {
+    // Encerramento REAL: mesmo mecanismo do stop (g_stop desliga os waits e
+    // dispara o unwind em cada thread guest). A diferença é que o runtime
+    // (PpcRuntime::run) trata o encerramento como fim DO TÍTULO e não do app:
+    // se há relaunch pendente, o guest re-executa com estado zerado.
+    g_titleTerminated = true;
+    requestStop();
+}
+
+bool titleTerminated() { return g_titleTerminated; }
+
+void resetTitleState() {
+    // Threads DEVEM estar finalizadas (joinAll) antes deste ponto.
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        g_threads.clear();
+        g_handles.clear();
+        g_keyed.clear();
+        g_nextHandle = 0xA0000000;
+        g_nextThreadHandle = 0x90000000;
+        memset(g_tls, 0, sizeof(g_tls));
+        memset(g_tlsUsed, 0, sizeof(g_tlsUsed));
+        g_nextKernelThreadId = 2; // 1 = thread principal (do próximo boot)
+    }
+    filesCloseAll();
+    g_heap.reset();
+    g_virt.reset();
+    g_phys.reset();
+    g_stop = false;
+    g_titleTerminated = false;
+    // launch data e módulos: PRESERVADOS (o relaunch os consome).
+}
+
+// ------------------------------------------------- módulos XEX carregados
+
+uint32_t registerModule(const std::string& name, uint32_t handle,
+                        std::map<uint32_t, uint32_t> exports) {
+    std::string key;
+    key.reserve(name.size());
+    for (char c : name) {
+        c = (char)tolower((unsigned char)c);
+        const size_t slash = key.find('/') ; // nada — normalizamos abaixo
+        (void)slash;
+        // mantém apenas o nome de arquivo (sem "game:\", "device\image\")
+        key.push_back(c);
+    }
+    const size_t bs = key.find_last_of("\\/:");
+    if (bs != std::string::npos) key = key.substr(bs + 1);
+    std::lock_guard<std::mutex> lk(g_stateM);
+    KernelModule& m = g_modules[key];
+    if (m.name.empty()) m.name = key;
+    if (handle != 0 && m.handle == 0) m.handle = handle;
+    if (m.handle == 0) m.handle = g_nextModuleHandle++;
+    if (!exports.empty()) {
+        // mescla: imports do boot + possíveis registros incrementais
+        for (auto& [ord, va] : exports) m.exports[ord] = va;
+    }
+    return m.handle;
+}
+
+KernelModule* findModuleByName(const std::string& name) {
+    std::string key;
+    key.reserve(name.size());
+    for (char c : name) key.push_back((char)tolower((unsigned char)c));
+    const size_t bs = key.find_last_of("\\/:");
+    if (bs != std::string::npos) key = key.substr(bs + 1);
+    std::lock_guard<std::mutex> lk(g_stateM);
+    auto it = g_modules.find(key);
+    return it == g_modules.end() ? nullptr : &it->second;
+}
+
+KernelModule* findModuleByHandle(uint32_t handle) {
+    if (handle == 0) return nullptr;
+    std::lock_guard<std::mutex> lk(g_stateM);
+    for (auto& [key, m] : g_modules) {
+        if (m.handle == handle) return &m;
+    }
+    return nullptr;
+}
+
+uint32_t executableModuleHandle() { return g_imageBase; }
+
+
 } // namespace fh2::kern
 
 // ------- arquivos abertos (fora do namespace p/ includes de std) -------
@@ -513,6 +675,7 @@ uint64_t perfCounter50MHz() {
 // ------------------------------------------------------ strings guest
 
 std::string readGuestCString(uint64_t addr, size_t maxLen) {
+    addr = (uint32_t)addr; // mask 32-bit (extensão de sinal do guest)
     if (!g_guestMem || addr == 0 || addr >= g_guestMemBytes) return {};
     std::string s;
     s.reserve(64);
@@ -527,6 +690,7 @@ std::string readGuestCString(uint64_t addr, size_t maxLen) {
 }
 
 std::string readGuestWString(uint64_t addr, size_t maxLen) {
+    addr = (uint32_t)addr; // mask 32-bit
     if (!g_guestMem || addr == 0 || addr >= g_guestMemBytes) return {};
     std::string s;
     s.reserve(64);

@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 #include "runtime/ppc/xex_loader.h"
 
@@ -57,6 +58,10 @@ private:
     uintptr_t memBase_ = 0;   // início da reserva (endereço guest 0)
     uintptr_t guestBase_ = 0; // memBase_ + 0x82000000 (início da imagem)
     XexImageInfo imageInfo_;  // base/entry/tamanho/TLS reais do XEX carregado
+    // Cópia PRISTINA da imagem decodificada (boot frio): no relaunch do
+    // título (XamLoaderLaunchTitle) a imagem é restaurada para este estado
+    // — o .data/.bss modificados pelo boot anterior voltam ao original.
+    std::vector<uint8_t> pristineImage_;
     bool guestStarted_ = false;
 };
 

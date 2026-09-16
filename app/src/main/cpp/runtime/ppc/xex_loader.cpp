@@ -139,7 +139,9 @@ bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
         return false;
     }
 
-    Image image = Xex2LoadImage(fileData.data(), fileData.size());
+    std::vector<Xex2ImportRecord> importRecords;
+    Image image = Xex2LoadImageEx(fileData.data(), fileData.size(),
+                                  &importRecords);
     if (image.data == nullptr || image.size == 0) {
         error = "decodificação XEX falhou (decriptação/descompressão — arquivo "
                 "corrompido ou variante não suportada)";
@@ -167,6 +169,32 @@ bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
     out.entryPoint = static_cast<uint32_t>(image.entry_point);
     out.imageSize = image.size;
     parseOptionalHeaders(fileData.data(), fileData.size(), out);
+
+    // Agrupa os imports por biblioteca (xam.xex, xboxkrnl.exe, ...) —
+    // ordinal → stub VA. Alimenta o registro de módulos do kernel
+    // (XexLoadImage/XexGetProcedureAddress com semântica real).
+    {
+        uint32_t captured = 0;
+        for (const auto& rec : importRecords) {
+            XexImageInfo::ImportLibrary* lib = nullptr;
+            for (auto& l : out.importLibraries) {
+                if (l.name == rec.library) { lib = &l; break; }
+            }
+            if (!lib) {
+                out.importLibraries.emplace_back();
+                lib = &out.importLibraries.back();
+                lib->name = rec.library;
+            }
+            lib->exports[rec.ordinal] = rec.thunkVa;
+            ++captured;
+        }
+        if (captured) {
+            __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
+                                "imports capturados: %u exports em %zu "
+                                "biblioteca(s)", captured,
+                                out.importLibraries.size());
+        }
+    }
     __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
                         "default.xex decodificado: base=0x%08X entry=0x%08X "
                         "size=%u bytes titleId=0x%08X privileges=%016llX "

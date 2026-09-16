@@ -27,6 +27,9 @@ class GuestHeap {
 public:
     void init(uint64_t base, uint64_t bytes);   // idempotente
 
+    /** Volta o alocador ao estado pós-init (relaunch do título: o boot do
+     *  guest recria TUDO, então nenhuma alocação anterior pode sobreviver). */
+    void reset();
     /** Aloca `size` bytes alinhados a `align` (padrão 16). 0 = falhou. */
     uint64_t alloc(uint64_t size, uint64_t align = 16);
     /** Libera um bloco devolvido por alloc() (no-op seguro se inválido). */
@@ -48,6 +51,8 @@ class GuestVirtWindow {
 public:
     void init(uint64_t base, uint64_t bytes, uint64_t page = 0x1000);
 
+    /** Volta o alocador ao estado pós-init (relaunch do título). */
+    void reset();
     /** Aloca `size` bytes alinhados à página (ou `align` se maior).
      *  0 = falhou. */
     uint64_t alloc(uint64_t size, uint64_t align = 0);

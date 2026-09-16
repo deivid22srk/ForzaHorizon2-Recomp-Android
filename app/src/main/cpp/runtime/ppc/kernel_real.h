@@ -24,6 +24,14 @@ void real_KeInitializeMutant(PPCContext& ctx, uint8_t* base);
 void real_KeReleaseMutant(PPCContext& ctx, uint8_t* base);
 void real_KeResetEvent(PPCContext& ctx, uint8_t* base);
 void real_KeResumeThread(PPCContext& ctx, uint8_t* base);
+void real_NtResumeThread(PPCContext& ctx, uint8_t* base);
+void real_NtSuspendThread(PPCContext& ctx, uint8_t* base);
+void real_KeSetAffinityThread(PPCContext& ctx, uint8_t* base);
+void real_KeSetBasePriorityThread(PPCContext& ctx, uint8_t* base);
+void real_ObReferenceObjectByHandle(PPCContext& ctx, uint8_t* base);
+void real_ObDereferenceObject(PPCContext& ctx, uint8_t* base);
+void real_XGetAVPack(PPCContext& ctx, uint8_t* base);
+void real_ExGetXConfigSetting(PPCContext& ctx, uint8_t* base);
 void real_KeSetEvent(PPCContext& ctx, uint8_t* base);
 void real_KeTlsAlloc(PPCContext& ctx, uint8_t* base);
 void real_KeTlsFree(PPCContext& ctx, uint8_t* base);
@@ -108,6 +116,12 @@ void real_XamInputSetState(PPCContext& ctx, uint8_t* base);
 void real_XamGetCurrentTitleId(PPCContext& ctx, uint8_t* base);
 void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base);
 void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base);
+void real_XamLoaderSetLaunchData(PPCContext& ctx, uint8_t* base);
+void real_XamLoaderLaunchTitle(PPCContext& ctx, uint8_t* base);
+void real_XamLoaderTerminateTitle(PPCContext& ctx, uint8_t* base);
+void real_XexLoadImage(PPCContext& ctx, uint8_t* base);
+void real_XexUnloadImage(PPCContext& ctx, uint8_t* base);
+void real_XexGetProcedureAddress(PPCContext& ctx, uint8_t* base);
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base);
 
 // ------------------------------------------------------- rastreio HLE

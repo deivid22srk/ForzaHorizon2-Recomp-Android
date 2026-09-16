@@ -228,6 +228,22 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
         kern::heap().init(kHeapBase, kHeapSize);
         kern::virtWindow().init(kVirtBase, kVirtSize);
         kern::physWindow().init(kPhysAllocBase, kPhysAllocSize);
+
+        // MÓDULOS XEX: executável do título + bibliotecas de import
+        // (xam.xex/xboxkrnl.exe — ordinais capturados na decodificação,
+        // exports = VA dos stubs reais p/ XexGetProcedureAddress).
+        for (const auto& lib : info.importLibraries) {
+            const uint32_t h = kern::registerModule(lib.name, 0, lib.exports);
+            PLOG("módulo registrado: %s (handle 0x%08X, %zu exports)",
+                 lib.name.c_str(), h, lib.exports.size());
+        }
+        kern::registerModule("default.xex", info.base, {});
+
+        // Cópia PRISTINA da imagem p/ restauração no relaunch do título.
+        pristineImage_.resize(info.imageSize);
+        memcpy(pristineImage_.data(),
+               reinterpret_cast<uint8_t*>(memBase_) + info.base,
+               info.imageSize);
         PLOG("guest mapeado: entry 0x%08X — tabela mágica %llu funções "
              "(0x%08llX..0x%08llX), heap 0x%08llX (%llu MB), janela virtual "
              "0x%08llX (%llu MB), janela física 0x%08llX (%llu MB)",
@@ -266,9 +282,42 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
                             imageInfo_);
         });
         guestStarted_ = true; // permanente: memória não pode ser desmapeada
-        runGuestMain(imageInfo_.entryPoint,
-                     reinterpret_cast<uint8_t*>(memBase_), imageInfo_,
-                     stopRequested);
+        // Loop de RELAUNCH (semântica real do XAM): XamLoaderLaunchTitle/
+        // TerminateTitle encerram o título; se houver relaunch pendente o
+        // guest re-executa do entry com estado zerado e o launch data
+        // preservado (boot 2 do launcher do FH2).
+        constexpr int kMaxBoots = 8; // guarda p/ loop de relaunch infinito
+        for (int boot = 1;; ++boot) {
+            if (boot > 1) {
+                PLOG("boot %d do título (relaunch XAM — launch data "
+                     "preservado)", boot);
+            }
+            if (boot > kMaxBoots) {
+                PLOG("limite de %d relaunches do título atingido — o jogo "
+                     "continua relançando a si mesmo; encerrando o guest p/ "
+                     "evitar loop infinito", kMaxBoots);
+                break;
+            }
+            runGuestMain(imageInfo_.entryPoint,
+                         reinterpret_cast<uint8_t*>(memBase_), imageInfo_,
+                         stopRequested);
+            std::string relaunchPath;
+            uint32_t relaunchFlags = 0;
+            if (stopRequested ||
+                !kern::consumeTitleRelaunch(relaunchPath, relaunchFlags)) {
+                break;
+            }
+            // Reset REAL do estado do título (threads já finalizadas pelo
+            // runGuestMain; heap/janelas/waitables/TLS zerados) + imagem
+            // restaurada ao estado de boot frio.
+            kern::resetTitleState();
+            if (!pristineImage_.empty()) {
+                memcpy(reinterpret_cast<uint8_t*>(memBase_) + imageInfo_.base,
+                       pristineImage_.data(), pristineImage_.size());
+            }
+            PLOG("relançando título (path=\"%s\" flags=0x%08X)",
+                 relaunchPath.c_str(), relaunchFlags);
+        }
         PLOG("run: guest concluído");
         return;
     }

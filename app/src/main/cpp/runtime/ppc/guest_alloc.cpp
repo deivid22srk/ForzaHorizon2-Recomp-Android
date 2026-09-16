@@ -22,6 +22,14 @@ void GuestHeap::init(uint64_t base, uint64_t bytes) {
     blocks_.clear();
 }
 
+void GuestHeap::reset() {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return;
+    nextFree_ = base_;
+    freeRanges_.clear();
+    blocks_.clear();
+}
+
 uint64_t GuestHeap::used() const {
     std::lock_guard<std::mutex> lk(m_);
     uint64_t used = nextFree_ - base_;
@@ -102,6 +110,14 @@ void GuestVirtWindow::init(uint64_t base, uint64_t bytes, uint64_t page) {
     size_ = bytes;
     page_ = page ? page : 0x1000;
     nextFree_ = base;
+    freeRanges_.clear();
+    blocks_.clear();
+}
+
+void GuestVirtWindow::reset() {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return;
+    nextFree_ = base_;
     freeRanges_.clear();
     blocks_.clear();
 }

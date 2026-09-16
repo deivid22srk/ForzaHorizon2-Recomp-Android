@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,17 @@ struct XexImageInfo {
         uint32_t size;       // bytes
     };
     std::vector<Resource> resources;
+
+    // Bibliotecas de import do XEX (XEX_HEADER_IMPORT_LIBRARIES) com os
+    // ordinais capturados durante a decodificação (o patch de import
+    // DESTRÓI os ordinais na imagem — captura obrigatória durante o
+    // Xex2LoadImageEx). Cada export: ordinal → VA guest do stub de código
+    // (nop;nop;nop;blr) que a tabela mágica resolve para o __imp__ HLE.
+    struct ImportLibrary {
+        std::string name;                      // "xam.xex", "xboxkrnl.exe"
+        std::map<uint32_t, uint32_t> exports;  // ordinal → VA do stub
+    };
+    std::vector<ImportLibrary> importLibraries;
 };
 
 /**

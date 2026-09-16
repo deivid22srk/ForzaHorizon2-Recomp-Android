@@ -57,6 +57,10 @@ REAL = {
     'NtFlushBuffersFile', 'NtQueryFullAttributesFile',
     'XexGetModuleHandle', 'XexGetModuleSection',
     'XexCheckExecutablePrivilege', 'MmQueryStatistics',
+    'NtResumeThread', 'NtSuspendThread',
+    'KeSetAffinityThread', 'KeSetBasePriorityThread',
+    'ObReferenceObjectByHandle', 'ObDereferenceObject',
+    'XGetAVPack', 'ExGetXConfigSetting',
     'NtClearEvent', 'NtClose', 'NtCreateEvent', 'NtCreateMutant',
     'NtCreateSemaphore', 'NtReleaseMutant', 'NtReleaseSemaphore',
     'NtSetEvent', 'NtSignalAndWaitForSingleObjectEx',
@@ -76,7 +80,10 @@ REAL = {
     'XamInputGetState', 'XamInputSetState',
     'XamGetCurrentTitleId',
     'XamLoaderGetLaunchDataSize', 'XamLoaderGetLaunchData',
+    'XamLoaderSetLaunchData', 'XamLoaderLaunchTitle',
+    'XamLoaderTerminateTitle',
     'XamUserGetSigninState',
+    'XexLoadImage', 'XexUnloadImage', 'XexGetProcedureAddress',
 }
 
 # ---- falhas honestas: o recurso real não existe neste boot ----
