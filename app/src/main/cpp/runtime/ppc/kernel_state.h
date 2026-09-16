@@ -251,6 +251,10 @@ struct KernelModule {
     uint32_t handle = 0;              // handle opaco estável
     uint32_t imageBase = 0;           // 0 p/ módulos virtuais sem imagem
     std::map<uint32_t, uint32_t> exports; // ordinal → VA do stub (guest)
+    bool secondary = false;           // XEX carregado em runtime (XexLoadImage
+                                      // de game:\...) — descarregado no relaunch
+    uint32_t imageGuest = 0;          // base da imagem mapeada (secondary)
+    uint32_t imageSpan = 0;           // bytes ocupados (secondary)
 };
 /** Registra/atualiza um módulo (chamado no boot com os imports decodados
  *  do XEX). handle 0 → aloca. Retorna o handle. */
@@ -258,6 +262,27 @@ uint32_t registerModule(const std::string& name, uint32_t handle,
                         std::map<uint32_t, uint32_t> exports);
 /** Busca por nome (case-insensitive, sem caminho — "xam.xex"). */
 KernelModule* findModuleByName(const std::string& name);
+/** Marca a faixa guest [addr, addr+size) como ocupada por um módulo
+ *  secundário (p/ que o heap e futuros módulos não colidam). false se
+ *  a faixa já estiver reservada. */
+bool reserveModuleRange(uint64_t addr, uint64_t size);
+/** true se [addr, addr+size) não colide com nenhuma faixa de módulo. */
+bool moduleRangeFree(uint64_t addr, uint64_t size);
+/** Descarrega os módulos secundários (relaunch do título — o console
+ *  descarrega os módulos do título anterior) e libera as faixas. */
+void releaseSecondaryModules();
+/** Marca um módulo como SECUNDÁRIO (carregado em runtime por XexLoadImage)
+ *  com a faixa guest que sua imagem ocupa — descarregado no relaunch. */
+void markModuleSecondary(uint32_t handle, uint32_t imageGuest,
+                         uint32_t imageSpan);
+/** Registra as tabelas COMPLETAS de exports de xboxkrnl.exe/xam.xex
+ *  (kernel_export_tables.cpp — ordinais não importados recebem stubs
+ *  sintéticos com despacho diagnosticado). Chamar após o boot registrar
+ *  os módulos com os imports capturados. */
+void registerFullExportTables();
+/** Nome real ("xboxkrnl.exe!XInputdFFSetDeviceGain") de um stub sintético,
+ *  nullptr se o VA não for sintético. */
+const char* syntheticStubName(uint32_t va);
 /** Busca por handle (nullptr se inválido). */
 KernelModule* findModuleByHandle(uint32_t handle);
 /** Handle do executável do título (0x82000000). */
@@ -273,11 +298,22 @@ struct GuestFile {
     uint64_t size = 0;     // tamanho real do arquivo
     uint64_t pos = 0;      // ponteiro lógico (uso quando ByteOffset=NULL)
     bool write = false;    // aberto para escrita (só paths locais)
+    bool dir = false;      // handle de DIRETÓRIO/volume (raiz de volume,
+                           // open relativo e NtQueryDirectoryFile)
+    bool rawDevice = false;// \Device\Harddisk0\Partition0 — dispositivo
+                           // de blocos do disco (setores 2048B)
 };
 
 /** Abre (ou falha REAL se o arquivo não existir). Handle 0 = erro. */
 uint32_t fileOpen(const std::string& guestPath, const std::string& display,
                   bool write, GuestFile** out);
+/** Registra um handle de DIRETÓRIO/volume (sem fd — open relativo e
+ *  enumeração ancoram neste objeto). */
+uint32_t fileOpenDir(const std::string& guestPath, const std::string& display,
+                     GuestFile** out);
+/** Registra o handle do DISPOSITIVO de blocos do disco (Partition0). */
+uint32_t fileOpenRawDevice(const std::string& display, uint64_t sizeBytes,
+                           GuestFile** out);
 /** Resolve handle → objeto (nullptr se inválido). */
 GuestFile* fileGet(uint32_t handle);
 /** Fecha o fd e remove o handle. */

@@ -252,6 +252,10 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
                  lib.name.c_str(), h, lib.exports.size());
         }
         kern::registerModule("default.xex", info.base, {});
+        // Tabelas completas: o título resolve via XexGetProcedureAddress
+        // ordinais que NÃO importa (XInputdFF*, XamParty*, FileTimeToSystemTime)
+        // — no console TODOS resolvem; sem isso o boot polling trava.
+        kern::registerFullExportTables();
 
         // Cópia PRISTINA da imagem p/ restauração no relaunch do título.
         pristineImage_.resize(info.imageSize);

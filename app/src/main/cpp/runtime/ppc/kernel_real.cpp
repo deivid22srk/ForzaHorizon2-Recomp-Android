@@ -51,8 +51,15 @@ extern "C" void fh2_guest_unmapped_code(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u64 = 0;
     if (last.load() != ea) {
         last.store(ea);
-        RLOG("CHAMADA p/ código não recompilado: 0x%08X (módulo XEX "
-             "secundário fora do pipeline — ver tools/run_recomp.sh)", ea);
+        // stubs sintéticos das tabelas completas: o nome REAL da função
+        // resolvida via XexGetProcedureAddress (r3=0 = "recurso ausente")
+        if (const char* name = fh2::kern::syntheticStubName(ea)) {
+            RLOG("CHAMADA a export sintética %s (stub 0x%08X) → r3=0 "
+                 "(semântica: recurso/serviço ausente)", name, ea);
+        } else {
+            RLOG("CHAMADA p/ código não recompilado: 0x%08X (módulo XEX "
+                 "secundário fora do pipeline — ver tools/run_recomp.sh)", ea);
+        }
     }
     count.fetch_add(1);
 }
@@ -1697,8 +1704,9 @@ void real_XexGetProcedureAddress(PPCContext& ctx, uint8_t* base) {
     }
     auto it = m->exports.find(ordinal);
     if (it == m->exports.end()) {
-        RLOG("XexGetProcedureAddress(0x%08X «%s», %u) = PROCEDURE_NOT_FOUND",
-             h, m->name.c_str(), ordinal);
+        RLOG("XexGetProcedureAddress(0x%08X «%s», %u) = PROCEDURE_NOT_FOUND "
+             "[guest lr=0x%08X]",
+             h, m->name.c_str(), ordinal, (uint32_t)ctx.lr);
         ctx.r3.u32 = 0xC000007Au; // STATUS_PROCEDURE_NOT_FOUND
         return;
     }
@@ -1728,7 +1736,7 @@ static std::string normalizeGuestPath(const std::string& in) {
         if (p.size() > n && strncasecmp(p.c_str(), pre, n) == 0) p = p.substr(n);
     }
     // volumes conhecidos: game:, d:, cdrom0 — ambos "game:\x" e "game:/x"
-    for (const char* vol : {"game:", "d:", "cdrom0:"}) {
+    for (const char* vol : {"game:", "d:", "cdrom0:", "cache:"}) {
         const size_t n = strlen(vol);
         if (p.size() > n && strncasecmp(p.c_str(), vol, n) == 0 &&
             (p[n] == '\\' || p[n] == '/')) {
@@ -1755,30 +1763,155 @@ static std::string normalizeGuestPath(const std::string& in) {
     return out;
 }
 
-// Lê UNICODE_STRING do guest (UTF-16 big-endian) — campo ObjectName de
-// OBJECT_ATTRIBUTES.
-static std::string readUnicodeString(uint8_t* base, uint64_t addr) {
+// Lê STRING do guest — X_ANSI_STRING real do 360: {u16 Length; u16
+// MaximumLength; u32 Buffer}, buffer ASCII (1 byte/char). O campo ObjectName
+// de X_OBJECT_ATTRIBUTES é um PANSI_STRING (Xenia xboxkrnl_io.cc: o kernel
+// traduz name_ptr como X_ANSI_STRING*), NÃO uma UNICODE_STRING UTF-16.
+static std::string readAnsiString(uint8_t* base, uint64_t addr) {
     if (!validGuest(addr, 8)) return {};
-    const uint32_t len = g16(base, addr);        // bytes (não chars)
+    const uint32_t len = g16(base, addr);        // bytes
     const uint32_t buf = g32(base, addr + 4);
     if (len == 0 || len > 1024 || !validGuest(buf, len)) return {};
     std::string out;
-    out.reserve(len / 2);
-    for (uint32_t i = 0; i + 1 < len; i += 2) {
-        const uint16_t wc = (uint16_t)(base[buf + i] << 8) | base[buf + i + 1];
-        if (wc == 0) break;
-        out.push_back(wc < 0x80 ? (char)wc : '?'); // caminhos do jogo são ASCII
+    out.reserve(len);
+    for (uint32_t i = 0; i < len; ++i) {
+        const char c = (char)base[buf + i];
+        if (c == 0) break;
+        out.push_back(c);
     }
     return out;
 }
 
-// Extrai o caminho de OBJECT_ATTRIBUTES (r5): {len, rootDir, pName, attr,...}
-static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr) {
-    if (!validGuest(objAttr, 24)) return {};
-    const uint32_t pName = g32(base, objAttr + 8);
+// X_OBJECT_ATTRIBUTES REAL do Xbox 360 (Xenia src/xenia/xbox.h):
+//   +0x00 u32 RootDirectory   (handle do objeto-pai p/ caminho relativo;
+//                             0xFFFFFFFD = ObDosDevices — caminho DOS pleno)
+//   +0x04 u32 NamePtr         (PANSI_STRING)
+//   +0x0C u32 Attributes
+// Retorna o caminho RELATIVO ao volume (vazio = não extraiu). O caminho
+// bruto (p/ log) vai para *rawOut quando não-nulo.
+static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr,
+                                            std::string* rawOut = nullptr) {
+    if (rawOut) rawOut->clear();
+    if (!validGuest(objAttr, 0x10)) return {};
+    const uint32_t root = g32(base, objAttr);
+    const uint32_t pName = g32(base, objAttr + 4);
     if (!pName) return {};
-    const std::string raw = readUnicodeString(base, pName);
-    return normalizeGuestPath(raw);
+    std::string raw = readAnsiString(base, pName);
+    if (rawOut) *rawOut = raw;
+    // ObDosDevices (0xFFFFFFFD) ou 0: o nome já é o caminho DOS completo
+    // ("game:\media\video.xmv") — exatamente como o kernel real trata.
+    if (root == 0 || root == 0xFFFFFFFDu) {
+        return normalizeGuestPath(raw);
+    }
+    // Caminho relativo a um handle de arquivo/diretório já aberto: prefixa
+    // com o caminho do objeto-raiz (semântica real do Object Manager).
+    GuestFile* f = fileGet(root);
+    if (!f) {
+        RLOG("Nt*: root directory 0x%08X inválido (caminho '%s')", root,
+             raw.c_str());
+        return {};
+    }
+    std::string joined = f->path;
+    if (!raw.empty() && raw[0] != '\\') {
+        if (!joined.empty() && joined.back() != '/') joined += '/';
+        joined += raw;
+    } else {
+        joined += raw; // "\x" relativo à raiz do objeto
+    }
+    return normalizeGuestPath(joined);
+}
+
+// Dispositivos de bloco do console — nomes NT canônicos (case-insensitive).
+// O FH2 abre \Device\Harddisk0\Partition0 (o disco) com o privilégio 23
+// (leitura bruta de setores) para a verificação/estrutura da mídia.
+static bool isRawDiscDevice(const std::string& raw) {
+    const char* kDevs[] = {R"(\Device\Harddisk0\Partition0)",
+                           R"(\Device\Cdrom0)"};
+    for (const char* dev : kDevs) {
+        const size_t n = strlen(dev);
+        if (raw.size() >= n && strncasecmp(raw.c_str(), dev, n) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Tamanho do disco virtual (DVD5 1-camada: 2.299.540 setores de 2048 B).
+constexpr uint64_t kRawDiscSize = 2299540ull * 2048ull;
+
+// Partições de CACHE do HD interno (Cache0/Cache1): scratch gravável que o
+// título usa p/ dados temporários. Sem HD (Arcade) elas NÃO existem no
+// console — aqui mapeadas p/ storage local do app (real e persistente);
+// filhos relativos resolvem em filesDir/cacheN/…
+static bool isCachePartition(const std::string& raw) {
+    const char* kCaches[] = {R"(\Device\Harddisk0\Cache0)",
+                             R"(\Device\Harddisk0\Cache1)"};
+    for (const char* dev : kCaches) {
+        const size_t n = strlen(dev);
+        if (strncasecmp(raw.c_str(), dev, n) == 0) return true;
+    }
+    return false;
+}
+
+// "\Device\Harddisk0\Cache0\sub\x" → "cache0/sub/x" (caminho local)
+static std::string cachePartitionPath(const std::string& raw) {
+    std::string p = raw;
+    for (char& c : p)
+        if (c == '\\') c = '/';
+    const char* kPre[] = {"Device/Harddisk0/Cache0", "Device/Harddisk0/Cache1"};
+    for (const char* pre : kPre) {
+        const size_t n = strlen(pre);
+        if (strncasecmp(p.c_str(), pre, n) == 0) {
+            std::string vol = pre;
+            vol = vol.substr(n - 6); // "CacheN"
+            for (char& c : vol) c = (char)tolower((unsigned char)c);
+            if (p.size() > n && p[n] == '/') return vol + "/" + p.substr(n + 1);
+            return vol + "/";
+        }
+    }
+    return {};
+}
+
+// Abre um handle de VOLUME-RAIZ/DIRETÓRIO (sem fd): os opens relativos
+// (RootDirectory) ancoram no caminho deste objeto — semântica real do
+// Object Manager. 'rel' vazio com display não-vazio = raiz de volume.
+static bool trySpecialOpen(const std::string& raw, const std::string& rel,
+                           uint32_t* outHandle, std::string* outErr) {
+    *outHandle = 0;
+    GuestFile* f = nullptr;
+    if (isRawDiscDevice(raw)) {
+        *outHandle = fileOpenRawDevice(raw, kRawDiscSize, &f);
+        if (*outHandle) {
+            RLOG("Nt*(raw disc device) = 0x%08X "
+                 "(dispositivo de blocos virtual da mídia)",
+                 *outHandle);
+            return true;
+        }
+        *outErr = "raw device";
+        return false;
+    }
+    if (isCachePartition(raw)) {
+        const std::string local = cachePartitionPath(raw);
+        // a raiz da partição vira handle de diretório com caminho local
+        // ("cache0/…") — filhos relativos ancoram nele
+        const bool isRoot = !local.empty() && local.back() == '/';
+        *outHandle = fileOpenDir(isRoot ? local.substr(0, local.size() - 1)
+                                        : local, raw, &f);
+        if (*outHandle) {
+            f->dir = true;
+            RLOG("Nt*(partição de cache) = 0x%08X (%s → storage local)",
+                 *outHandle, raw.c_str());
+            return true;
+        }
+        *outErr = "cache partition";
+        return false;
+    }
+    if (rel.empty() && !raw.empty()) {
+        // raiz de volume ("cache:\", "game:\") ou caminho de diretório
+        *outHandle = fileOpenDir(rel, raw, &f);
+        if (*outHandle) return true;
+    }
+    return false;
 }
 
 void real_NtCreateFile(PPCContext& ctx, uint8_t* base) {
@@ -1793,13 +1926,18 @@ void real_NtCreateFile(PPCContext& ctx, uint8_t* base) {
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    std::string display = pathFromObjectAttributes(base, objAttr);
-    std::string rel = normalizeGuestPath(display);
+    std::string display;
+    std::string rel = pathFromObjectAttributes(base, objAttr, &display);
     const bool write = disposition == 2 || disposition == 3 || disposition == 5;
     // FILE_SUPERSEDE=0, CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3,
     // OPEN_ALWAYS=4, TRUNCATE_EXISTING=5
     uint32_t handle = 0;
-    if (!rel.empty()) {
+    {
+        uint32_t h = 0;
+        std::string err;
+        if (trySpecialOpen(display, rel, &h, &err)) handle = h;
+    }
+    if (!handle && !rel.empty()) {
         GuestFile* f = nullptr;
         handle = fileOpen(rel, display, write, &f);
     }
@@ -1807,8 +1945,17 @@ void real_NtCreateFile(PPCContext& ctx, uint8_t* base) {
         w32(base, pIoStatus, STATUS_OBJECT_NAME_NOT_FOUND);
         ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
         static Throttle tf;
-        if (tf.shouldLog(24, 512)) {
-            RLOG("NtCreateFile('%s') = NOT_FOUND", display.c_str());
+        if (rel.empty()) {
+            // caminho vazio: dumpa X_OBJECT_ATTRIBUTES p/ diagnóstico real
+            RLOG("NtCreateFile('') = NOT_FOUND [guest lr=0x%08X objAttr=0x%08X "
+                 "{root=0x%08X pName=0x%08X attr=0x%08X}]",
+                 (uint32_t)ctx.lr, (uint32_t)objAttr,
+                 validGuest(objAttr, 4) ? g32(base, objAttr) : 0,
+                 validGuest(objAttr, 8) ? g32(base, objAttr + 4) : 0,
+                 validGuest(objAttr, 16) ? g32(base, objAttr + 12) : 0);
+        } else if (tf.shouldLog(24, 512)) {
+            RLOG("NtCreateFile('%s') = NOT_FOUND [guest lr=0x%08X]",
+                 display.c_str(), (uint32_t)ctx.lr);
         }
         return;
     }
@@ -1835,10 +1982,15 @@ void real_NtOpenFile(PPCContext& ctx, uint8_t* base) {
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    const std::string display = pathFromObjectAttributes(base, objAttr);
-    const std::string rel = normalizeGuestPath(display);
+    std::string display;
+    std::string rel = pathFromObjectAttributes(base, objAttr, &display);
     uint32_t handle = 0;
-    if (!rel.empty()) {
+    {
+        uint32_t h = 0;
+        std::string err;
+        if (trySpecialOpen(display, rel, &h, &err)) handle = h;
+    }
+    if (!handle && !rel.empty()) {
         GuestFile* f = nullptr;
         handle = fileOpen(rel, display, false, &f);
     }
@@ -1846,8 +1998,16 @@ void real_NtOpenFile(PPCContext& ctx, uint8_t* base) {
         w32(base, pIoStatus, STATUS_OBJECT_NAME_NOT_FOUND);
         ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
         static Throttle tf;
-        if (tf.shouldLog(24, 512)) {
-            RLOG("NtOpenFile('%s') = NOT_FOUND", display.c_str());
+        if (rel.empty()) {
+            RLOG("NtOpenFile('') = NOT_FOUND [guest lr=0x%08X objAttr=0x%08X "
+                 "{root=0x%08X pName=0x%08X attr=0x%08X}]",
+                 (uint32_t)ctx.lr, (uint32_t)objAttr,
+                 validGuest(objAttr, 4) ? g32(base, objAttr) : 0,
+                 validGuest(objAttr, 8) ? g32(base, objAttr + 4) : 0,
+                 validGuest(objAttr, 16) ? g32(base, objAttr + 12) : 0);
+        } else if (tf.shouldLog(24, 512)) {
+            RLOG("NtOpenFile('%s') = NOT_FOUND [guest lr=0x%08X]",
+                 display.c_str(), (uint32_t)ctx.lr);
         }
         return;
     }
@@ -1874,7 +2034,7 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
     const uint32_t length = ctx.r9.u32;
     const uint64_t pOffset = ctx.r10.u32;
     GuestFile* f = fileGet(handle);
-    if (!f || f->fd < 0 || !validGuest(pIoStatus, 8)) {
+    if (!f || !validGuest(pIoStatus, 8)) {
         ctx.r3.u32 = STATUS_INVALID_HANDLE;
         return;
     }
@@ -1887,6 +2047,56 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
         off = g64(base, pOffset); // PLARGE_INTEGER (u64 BE)
     } else {
         off = f->pos;             // ponteiro lógico do FILE_OBJECT
+    }
+
+    // ------------------------------------------------ dispositivo de blocos
+    // \Device\Harddisk0\Partition0: setores de 2048 B servidos pelo
+    // gerador do disco virtual. O XDVDFS descreve a estrutura no setor 32
+    // ("MICROSOFT*XBOX*MEDIA" + diretório raiz) — a única área preenchida
+    // sem a imagem bruta; o restante é zero REAL (área não presente no
+    // dump de arquivos). Cada leitura é logada com setor/bytes: o padrão
+    // de leitura do título mostra exatamente o que a mídia virtual ainda
+    // precisa servir (issue #19 — montagem GDFX).
+    if (f->rawDevice) {
+        uint32_t done = 0;
+        if (length > 0 && off < f->size) {
+            done = (uint32_t)std::min<uint64_t>(length, f->size - off);
+            memset(base + buffer, 0, done);
+            constexpr uint64_t kVdOff = 32ull * 2048ull; // setor 32 = XDVDFS
+            if (off < kVdOff + 2048 && off + done > kVdOff) {
+                uint8_t vd[2048];
+                memset(vd, 0, sizeof(vd));
+                memcpy(vd, "MICROSOFT*XBOX*MEDIA", 20);
+                // root_dir_sector/size/checksum: 0 — a montagem real da
+                // árvore (issue #19 GDFX) substituirá os valores; o padrão
+                // de leitura do título define o próximo passo REAL.
+                const uint64_t dst = off > kVdOff ? 0 : kVdOff - off;
+                const uint64_t src = off > kVdOff ? off - kVdOff : 0;
+                const uint64_t n =
+                    std::min<uint64_t>(2048 - src, done - dst);
+                memcpy(base + buffer + dst, vd + src, n);
+            }
+            f->pos = off + done;
+        }
+        w32(base, pIoStatus, 0);
+        w32(base, pIoStatus + 4, done);
+        ctx.r3.u32 = STATUS_SUCCESS;
+        static Throttle t;
+        if (t.shouldLog(8, 256)) {
+            RLOG("NtReadFile(Partition0) setor=%llu len=%u = %u bytes",
+                 (unsigned long long)(off / 2048), length, done);
+        }
+        return;
+    }
+    if (f->dir) {
+        // leitura em handle de diretório: erro real do gerenciador de E/S
+        w32(base, pIoStatus, 0xC000000Bu); // STATUS_INVALID_HANDLE class
+        ctx.r3.u32 = 0xC000000Bu;
+        return;
+    }
+    if (f->fd < 0) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
     }
     uint32_t done = 0;
     if (length > 0) {
@@ -2009,8 +2219,8 @@ void real_NtQueryFullAttributesFile(PPCContext& ctx, uint8_t* base) {
     // (POBJECT_ATTRIBUTES, PFILE_NETWORK_OPEN_INFORMATION)
     const uint64_t objAttr = ctx.r3.u32;
     const uint64_t info = ctx.r4.u32;
-    const std::string display = pathFromObjectAttributes(base, objAttr);
-    const std::string rel = normalizeGuestPath(display);
+    std::string display;
+    const std::string rel = pathFromObjectAttributes(base, objAttr, &display);
     if (rel.empty() || !validGuest(info, 56)) {
         ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
         return;

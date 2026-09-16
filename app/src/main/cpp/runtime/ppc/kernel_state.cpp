@@ -49,6 +49,8 @@ bool g_tlsUsed[64] = {};
 
 // --- módulos XEX carregados (virtuais p/ xam.xex/xboxkrnl.exe) ---
 std::map<std::string, KernelModule> g_modules; // nome (lowercase) → módulo
+// faixas guest reservadas por módulos secundários (addr → size)
+static std::map<uint64_t, uint64_t> g_moduleRanges;
 uint32_t g_nextModuleHandle = 0x8F000001;
 
 // --- identidade de thread (kernel) ---
@@ -540,7 +542,11 @@ void resetTitleState() {
     g_phys.reset();
     g_stop = false;
     g_titleTerminated = false;
-    // launch data e módulos: PRESERVADOS (o relaunch os consome).
+    // launch data: PRESERVADO (o relaunch o consome). Módulos secundários:
+    // DESCARREGADOS como no console (o novo boot re-executa XexLoadImage e
+    // recarrega do storage — a imagem anterior pode ter sido sobrescrita
+    // pelas alocações do boot que terminou).
+    releaseSecondaryModules();
 }
 
 // ------------------------------------------------- módulos XEX carregados
@@ -590,6 +596,58 @@ KernelModule* findModuleByHandle(uint32_t handle) {
     return nullptr;
 }
 
+bool moduleRangeFree(uint64_t addr, uint64_t size) {
+    if (size == 0) return false;
+    std::lock_guard<std::mutex> lk(g_stateM);
+    for (const auto& [b, s] : g_moduleRanges) {
+        if (addr < b + s && b < addr + size) return false;
+    }
+    return true;
+}
+
+bool reserveModuleRange(uint64_t addr, uint64_t size) {
+    if (size == 0) return false;
+    std::lock_guard<std::mutex> lk(g_stateM);
+    for (const auto& [b, s] : g_moduleRanges) {
+        if (addr < b + s && b < addr + size) return false;
+    }
+    g_moduleRanges[addr] = size;
+    return true;
+}
+
+void releaseSecondaryModules() {
+    std::lock_guard<std::mutex> lk(g_stateM);
+    uint8_t* ram = guestMem();
+    const uint64_t ramBytes = guestMemBytes();
+    for (auto it = g_modules.begin(); it != g_modules.end();) {
+        if (it->second.secondary) {
+            // zero REAL da memória do módulo — nenhum dado do boot anterior
+            // sobrevive (o console descarrega a imagem ao terminar o título)
+            if (ram && it->second.imageGuest && it->second.imageSpan &&
+                it->second.imageGuest + it->second.imageSpan <= ramBytes) {
+                memset(ram + it->second.imageGuest, 0, it->second.imageSpan);
+            }
+            it = g_modules.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    g_moduleRanges.clear();
+}
+
+void markModuleSecondary(uint32_t handle, uint32_t imageGuest,
+                         uint32_t imageSpan) {
+    std::lock_guard<std::mutex> lk(g_stateM);
+    for (auto& [key, m] : g_modules) {
+        if (m.handle == handle) {
+            m.secondary = true;
+            m.imageGuest = imageGuest;
+            m.imageSpan = imageSpan;
+            return;
+        }
+    }
+}
+
 uint32_t executableModuleHandle() { return g_imageBase; }
 
 
@@ -623,6 +681,43 @@ uint32_t fileOpen(const std::string& guestPath, const std::string& display,
     f->fd = fd;
     f->size = size;
     f->write = write;
+    GuestFile* p = f.get();
+    uint32_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        h = g_nextFileHandle += 4;
+        g_files[h] = std::move(f);
+    }
+    *out = p;
+    return h;
+}
+
+uint32_t fileOpenDir(const std::string& guestPath, const std::string& display,
+                     GuestFile** out) {
+    *out = nullptr;
+    auto f = std::make_unique<GuestFile>();
+    f->path = guestPath;
+    f->display = display;
+    f->dir = true;
+    GuestFile* p = f.get();
+    uint32_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        h = g_nextFileHandle += 4;
+        g_files[h] = std::move(f);
+    }
+    *out = p;
+    return h;
+}
+
+uint32_t fileOpenRawDevice(const std::string& display, uint64_t sizeBytes,
+                           GuestFile** out) {
+    *out = nullptr;
+    auto f = std::make_unique<GuestFile>();
+    f->path = R"(\Device\Harddisk0\Partition0)";
+    f->display = display;
+    f->rawDevice = true;
+    f->size = sizeBytes;
     GuestFile* p = f.get();
     uint32_t h;
     {

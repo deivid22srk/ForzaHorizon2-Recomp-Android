@@ -2651,7 +2651,14 @@ void __imp__XamShowDeviceSelectorUI(PPCContext& ctx, uint8_t* base) {
 void __imp__XamShowDirtyDiscErrorUI(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("XamShowDirtyDiscErrorUI", ctx);
-    FH2_HLE_ONCE(XamShowDirtyDiscErrorUI, "semântica real pendente (issue #16)");
+    static bool _logged_dd = false;
+    if (!_logged_dd) {
+        _logged_dd = true;
+        HLOG("HLE stub: XamShowDirtyDiscErrorUI — chamado pelo guest em "
+             "lr=0x%08X (r3=0x%08X r4=0x%08X r5=0x%08X) [issue #16]",
+             (uint32_t)ctx.lr, (uint32_t)ctx.r3.u32, (uint32_t)ctx.r4.u32,
+             (uint32_t)ctx.r5.u32);
+    }
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XamShowDirtyDiscErrorUI", ctx);
 }

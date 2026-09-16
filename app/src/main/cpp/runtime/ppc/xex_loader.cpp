@@ -279,6 +279,35 @@ std::map<uint32_t, uint32_t> parseExportTable(const uint8_t* fileData,
 
 } // namespace
 
+/** Tamanho REAL do conteúdo decodificável do XEX (o que existe de bytes no
+ *  arquivo): BASIC = soma dos blocos {dataSize+zeroSize}; NONE e NORMAL(LZX)
+ *  = security->imageSize. O Xex2LoadImage aloca exatamente esse tanto —
+ *  security->imageSize pode ser MAIOR (span com zero-fill no console). */
+static uint32_t secondaryContentBytes(const uint8_t* fileData,
+                                      size_t fileSize) {
+    if (fileSize < 0x30) return 0;
+    const auto* header = reinterpret_cast<const Xex2Header*>(fileData);
+    if (header->securityOffset + 8 > fileSize) return 0;
+    const auto* security =
+        reinterpret_cast<const Xex2SecurityInfo*>(fileData +
+                                                  header->securityOffset);
+    const uint32_t declared = security->imageSize;
+    const auto* ffi = reinterpret_cast<const Xex2OptFileFormatInfo*>(
+        getOptHeaderPtr(fileData, XEX_HEADER_FILE_FORMAT_INFO));
+    if (!ffi) return declared;
+    if (ffi->compressionType != XEX_COMPRESSION_BASIC) return declared;
+    const auto* blocks =
+        reinterpret_cast<const Xex2FileBasicCompressionBlock*>(ffi + 1);
+    const size_t numBlocks =
+        (ffi->infoSize / sizeof(Xex2FileBasicCompressionInfo)) - 1;
+    uint64_t total = 0;
+    for (size_t i = 0; i < numBlocks; ++i) {
+        total += blocks[i].dataSize + blocks[i].zeroSize;
+    }
+    if (total == 0 || total > 0x10000000ull) return declared;
+    return (uint32_t)total;
+}
+
 uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
                              const std::string& displayName) {
     // 1) leitura REAL do arquivo do jogo
@@ -313,35 +342,84 @@ uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
                             displayName.c_str());
         return 0;
     }
-    // 3) colocação determinística na região de módulos
+    // 3) tamanho REAL do conteúdo decodificado: o Xex2LoadImage devolve
+    //    image.size = security->imageSize, mas o buffer descomprimido tem o
+    //    tamanho da SOMA dos blocos (XEX_COMPRESSION_BASIC) — copiar
+    //    image.size leria além do buffer (SIGSEGV no host / lixo no device).
+    //    O restante do span (até security->imageSize) é zero-fill como no
+    //    console (páginas presentes além do conteúdo = zero).
+    const uint32_t contentBytes =
+        secondaryContentBytes(fileData.data(), fileData.size());
+    const uint32_t spanBytes =
+        contentBytes < image.size ? image.size : contentBytes;
+
+    // 4) colocação: BASE PREFERIDA do módulo (XEX_HEADER_IMAGE_BASE_ADDRESS
+    //    — o Xex2LoadImage já a devolve em image.base). O console carrega o
+    //    módulo na base preferida; o .reloc do XMediaFacade/SpeechFacade nem
+    //    existe no arquivo (loader-consumido), logo relocar é impossível.
+    //    Se a faixa estiver ocupada (alocação do título), cai para a região
+    //    de módulos 0x98000000+ — comportamento honesto e logado.
+    uint8_t* guestMem = fh2::kern::guestMem();
+    const uint64_t ramBytes = fh2::kern::guestMemBytes();
+    if (!guestMem || ramBytes == 0) return 0;
     const uint64_t align = 0x10000ull;
-    uint64_t placed = (g_moduleRegionNext + align - 1) & ~(align - 1);
-    if (placed + image.size > kModuleRegionBase + kModuleRegionSize) {
+    uint64_t placed = 0;
+    const uint64_t preferred = ((uint64_t)image.base + align - 1) & ~(align - 1);
+    if (preferred >= 0x82000000ull &&
+        preferred + spanBytes <= ramBytes &&
+        fh2::kern::moduleRangeFree(preferred, spanBytes) &&
+        fh2::kern::heap().reserveAt(preferred, spanBytes) != 0) {
+        placed = preferred;
+    } else {
+        uint64_t candidate = (g_moduleRegionNext + align - 1) & ~(align - 1);
+        while (candidate + spanBytes <= kModuleRegionBase + kModuleRegionSize &&
+               !fh2::kern::moduleRangeFree(candidate, spanBytes)) {
+            candidate += align;
+        }
+        if (candidate + spanBytes > kModuleRegionBase + kModuleRegionSize) {
+            __android_log_print(ANDROID_LOG_ERROR, "FH2/XEX",
+                                "região de módulos esgotada p/ '%s'",
+                                displayName.c_str());
+            return 0;
+        }
+        placed = candidate;
+        __android_log_print(ANDROID_LOG_WARN, "FH2/XEX",
+                            "'%s': base preferida 0x%08X ocupada — módulo em "
+                            "0x%08llX (reloc sem .reloc: risco de ponteiros "
+                            "absolutos)",
+                            displayName.c_str(), image.base,
+                            (unsigned long long)placed);
+    }
+    if (!fh2::kern::reserveModuleRange(placed, spanBytes)) {
         __android_log_print(ANDROID_LOG_ERROR, "FH2/XEX",
-                            "região de módulos esgotada p/ '%s'",
-                            displayName.c_str());
+                            "faixa do módulo '%s' colidiu", displayName.c_str());
         return 0;
     }
-    uint8_t* guestMem = fh2::kern::guestMem();
-    if (!guestMem) return 0;
-    memcpy(guestMem + placed, image.data.get(), image.size);
-    g_moduleRegionNext = placed + image.size;
+
+    // 5) cópia do CONTEÚDO (o span restante já é zero na RAM guest — memfd
+    //    zero-init + releaseSecondaryModules zera no relaunch)
+    memcpy(guestMem + placed, image.data.get(), contentBytes);
+    g_moduleRegionNext = placed + spanBytes;
     const uint32_t moduleVa = (uint32_t)placed;
 
-    // 4) exports reais (IMAGE_EXPORT_DIRECTORY)
+    // 6) exports reais (IMAGE_EXPORT_DIRECTORY — presente quando o XEX tem
+    //    XEX_HEADER_EXPORTS_BY_NAME; XMediaFacade/SpeechFacade NÃO têm —
+    //    exports vazias é o estado real desses módulos)
     auto exports = parseExportTable(fileData.data(), fileData.size(),
                                     image.data.get(), (uint32_t)image.base,
                                     moduleVa);
 
-    // 5) registro no kernel (imports capturados ficam p/ diagnóstico — as
-    //    exports do módulo são o que o título resolve)
+    // 7) registro no kernel como módulo SECUNDÁRIO (descarregado no relaunch)
     std::map<uint32_t, uint32_t> expMap = exports;
     const uint32_t handle =
         fh2::kern::registerModule(displayName, 0, expMap);
+    fh2::kern::markModuleSecondary(handle, moduleVa, (uint32_t)spanBytes);
     __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
-                        "XEX secundário carregado: %s base=0x%08X size=%u "
-                        "exports=%zu (handle 0x%08X)",
-                        displayName.c_str(), moduleVa, image.size,
+                        "XEX secundário carregado: %s base=0x%08X (preferida "
+                        "0x%08X) span=%u conteúdo=%u entry=0x%08X exports=%zu "
+                        "(handle 0x%08X)",
+                        displayName.c_str(), moduleVa, image.base,
+                        spanBytes, contentBytes, image.entry_point,
                         expMap.size(), handle);
     return handle;
 }

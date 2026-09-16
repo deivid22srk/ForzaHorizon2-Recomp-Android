@@ -37,6 +37,28 @@ uint64_t GuestHeap::used() const {
     return used;
 }
 
+// Reserva uma faixa FIXA (módulos XEX carregados em runtime — base
+// preferida). Falha (0) se qualquer página já estiver em uso: o chamador
+// decide o fallback — igual ao gerenciador de memória do console.
+uint64_t GuestHeap::reserveAt(uint64_t addr, uint64_t size) {
+    if (size == 0) return 0;
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0) return 0;
+    if (addr < base_ || addr + size > base_ + size_) return 0;
+    // colisão com blocos em uso (inclui o cursor bump — nextFree_)
+    for (const auto& [b, s] : blocks_) {
+        if (addr < b + s && b < addr + size) return 0;
+    }
+    if (addr < nextFree_) {
+        // recua o cursor e devolve o vão ao conjunto de livres
+        const uint64_t hole = addr + size;
+        if (hole < nextFree_) freeRanges_[hole] = nextFree_ - hole;
+        nextFree_ = addr;
+    }
+    blocks_[addr] = size;
+    return addr;
+}
+
 uint64_t GuestHeap::alloc(uint64_t size, uint64_t align) {
     if (size == 0) size = 1;
     if (align < 16) align = 16;

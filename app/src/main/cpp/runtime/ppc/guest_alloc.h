@@ -32,6 +32,9 @@ public:
     void reset();
     /** Aloca `size` bytes alinhados a `align` (padrão 16). 0 = falhou. */
     uint64_t alloc(uint64_t size, uint64_t align = 16);
+    /** Reserva uma faixa FIXA (módulos XEX em base preferida). 0 = falha
+     *  (faixa fora da janela ou colidindo com uso existente). */
+    uint64_t reserveAt(uint64_t addr, uint64_t size);
     /** Libera um bloco devolvido por alloc() (no-op seguro se inválido). */
     void free(uint64_t addr);
 
