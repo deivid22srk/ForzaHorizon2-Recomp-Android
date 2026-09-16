@@ -10,6 +10,9 @@
 #if FH2_HAS_RECOMP
 
 #include <android/log.h>
+
+#include <atomic>
+
 #include "ppc_config.h"
 #include "ppc_context.h"
 #include "runtime/ppc/kernel_real.h"
@@ -111,12 +114,20 @@ void __imp__ExTerminateThread(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("ExTerminateThread", ctx);
 }
 
-// FscSetCacheElementCount: semântica real pendente (issue #16)
+// FscSetCacheElementCount: semântica REAL (D31): o kernel do 360 guarda o
+// tamanho do cache de elementos do FS do título e devolve ERROR_SUCCESS.
+// Armazenamos o valor como estado real do FS (observável no diagnóstico do
+// runtime — o cache de arquivos do FsProvider usa linhas de 64 KB; o count
+// do 360 é por elemento de diretório, dimensão distinta, mas o estado fica
+// registrado como no console).
 void __imp__FscSetCacheElementCount(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("FscSetCacheElementCount", ctx);
-    FH2_HLE_ONCE(FscSetCacheElementCount, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    static std::atomic<uint32_t> s_cacheElements{0};
+    s_cacheElements.store(ctx.r3.u32, std::memory_order_relaxed);
+    HLOG("FscSetCacheElementCount(%u) — cache de elementos do título "
+         "dimensionado", ctx.r3.u32);
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
     fh2::kern::traceReturn("FscSetCacheElementCount", ctx);
 }
 
@@ -2184,12 +2195,25 @@ void __imp__XamContentGetDeviceState(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamContentGetDeviceState", ctx);
 }
 
-// XamContentGetLicenseMask: semântica real pendente (issue #16)
+// XamContentGetLicenseMask: semântica REAL (D31): devolve a máscara de
+// licenças de conteúdo desbloqueado do perfil. Disco sem DLC = 0 licenças
+// (estado real p/ o título). Caminho síncrono do FH2 (r4 = overlapped nulo):
+// escreve a máscara e devolve ERROR_SUCCESS. Com overlapped, o console faria
+// completa assíncrona — sem fila de APC modelada, devolvemos erro EXPLÍCITO
+// (nunca sucesso falso).
 void __imp__XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("XamContentGetLicenseMask", ctx);
-    FH2_HLE_ONCE(XamContentGetLicenseMask, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    const uint64_t pMask = ctx.r3.u64;
+    if (ctx.r4.u64 != 0) {
+        HLOG("XamContentGetLicenseMask async (overlapped) = ERROR_NOT_SUPPORTED");
+        ctx.r3.u32 = 50; // ERROR_NOT_SUPPORTED (Win32)
+        return;
+    }
+    if (fh2::kern::guestPtrValid(pMask, 4)) {
+        fh2::kern::writeGuestU32(pMask, 0); // 0 licenças: disco, sem DLC
+    }
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
     fh2::kern::traceReturn("XamContentGetLicenseMask", ctx);
 }
 
