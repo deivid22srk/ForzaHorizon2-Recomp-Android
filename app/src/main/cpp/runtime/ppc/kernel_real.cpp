@@ -16,6 +16,7 @@
 //
 // Convenção de args: r3..r10; big-endian; retornos em r3 (u32) / r3:r4 (u64).
 #include "kernel_real.h"
+#include "runtime/ppc/xex_loader.h"
 
 #if FH2_HAS_RECOMP
 
@@ -36,22 +37,47 @@
 
 #define RLOG(...) __android_log_print(ANDROID_LOG_INFO, "FH2/KRN", __VA_ARGS__)
 
+// ---- diagnóstico de código não recompilado (chamada indireta guardada) ----
+// Endereço alvo da última chamada indireta fora da faixa de código gerado
+// (ex.: export de módulo XEX secundário carregado em runtime). O thunk loga
+// (throttled) e retorna r3 = 0 — comportamento DEFINIDO e visível; nunca um
+// SIGSEGV selvagem na tabela mágica.
+extern "C" uint32_t fh2_guest_unmappedTarget = 0;
+extern "C" void fh2_guest_unmapped_code(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    static std::atomic<uint32_t> last{0};
+    static std::atomic<int> count{0};
+    const uint32_t ea = fh2_guest_unmappedTarget;
+    ctx.r3.u64 = 0;
+    if (last.load() != ea) {
+        last.store(ea);
+        RLOG("CHAMADA p/ código não recompilado: 0x%08X (módulo XEX "
+             "secundário fora do pipeline — ver tools/run_recomp.sh)", ea);
+    }
+    count.fetch_add(1);
+}
+
 namespace fh2::kern {
 
 namespace {
 
 // ----- acesso à memória guest (big-endian) -----
+// CRÍTICO: endereços guest chegam em registradores 64-bit com EXTENSÃO DE
+// SINAL (o PPC64 do Xenon mantém 0xFFFFFFFF8xxxxxxx em registradores —
+// comprovado no tombstone: base + 0xFFFFFFFF8342B6C0 → SEGV em 0x6e1fc2d6c0,
+// real_ExCreateThread+156). O endereçamento REAL do guest é 32-bit: mascarar
+// AQUI no ponto único de acesso — nenhum callee precisa lembrar disso.
 inline uint32_t g32(uint8_t* b, uint64_t a) {
-    return __builtin_bswap32(*(uint32_t*)(b + a));
+    return __builtin_bswap32(*(uint32_t*)(b + (uint32_t)a));
 }
 inline void w32(uint8_t* b, uint64_t a, uint32_t v) {
-    *(uint32_t*)(b + a) = __builtin_bswap32(v);
+    *(uint32_t*)(b + (uint32_t)a) = __builtin_bswap32(v);
 }
 inline uint64_t g64(uint8_t* b, uint64_t a) {
-    return __builtin_bswap64(*(uint64_t*)(b + a));
+    return __builtin_bswap64(*(uint64_t*)(b + (uint32_t)a));
 }
 inline void w64(uint8_t* b, uint64_t a, uint64_t v) {
-    *(uint64_t*)(b + a) = __builtin_bswap64(v);
+    *(uint64_t*)(b + (uint32_t)a) = __builtin_bswap64(v);
 }
 
 inline bool validGuest(uint64_t a, uint64_t n = 4) {
@@ -124,9 +150,15 @@ inline Waitable* ev(uint8_t* base, uint64_t obj, bool create) {
     return waitable(obj, create, WaitKind::Event);
 }
 
-// timeout: PLARGE_INTEGER (100 ns; negativo = relativo). NULL = infinito.
+// timeout: PLARGE_INTEGER (unidades de 100 ns; negativo = RELATIVO,
+// positivo = ABSOLUTO desde 1601-01-01). Ponteiro NULL/inválido = espera
+// INFINITA — sentinela kNoTimeout (INT64_MIN, definida em kernel_state.h).
+// NUNCA -1 como "infinito": no NT, intervalo relativo -1 é um wait real de
+// 100ns — o antigo sentinel -1 fazia waitForMultiple expirar em 1ns → spin
+// de 1.6M iterações/s do worker do FH2 (log 16_09:
+// NtWaitForSingleObjectEx(A0000000) → 0x102 instantâneo).
 inline int64_t readTimeout(uint8_t* base, uint64_t addr) {
-    if (addr == 0 || !validGuest(addr, 8)) return -1; // infinito (relativo -1)
+    if (addr == 0 || !validGuest(addr, 8)) return kNoTimeout; // infinito
     return (int64_t)g64(base, addr);
 }
 
@@ -139,15 +171,7 @@ struct Throttle {
     }
 };
 
-inline uint32_t waitOne(uint8_t* base, Waitable* w, uint64_t timeoutAddr,
-                        bool alertable) {
-    Waitable* objs[1] = {w};
-    if (!w) return kWaitTimeout;
-    return waitForMultiple(objs, 1, true, readTimeout(base, timeoutAddr),
-                           alertable);
-}
-
-// STATUS constants reais do NT
+// STATUS constants reais do NT (usadas pelos helpers de espera abaixo)
 constexpr uint32_t STATUS_SUCCESS = 0x00000000;
 constexpr uint32_t STATUS_INVALID_PARAMETER = 0xC000000D;
 constexpr uint32_t STATUS_INVALID_HANDLE = 0xC0000008;
@@ -156,6 +180,14 @@ constexpr uint32_t STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034;
 constexpr uint32_t STATUS_NO_MEMORY = 0xC0000017;
 constexpr uint32_t STATUS_UNSUCCESSFUL = 0xC0000001;
 constexpr uint32_t STATUS_ACCESS_VIOLATION = 0xC0000005;
+
+inline uint32_t waitOne(uint8_t* base, Waitable* w, uint64_t timeoutAddr,
+                        bool alertable) {
+    Waitable* objs[1] = {w};
+    if (!w) return STATUS_INVALID_HANDLE; // semântica NT real (não timeout)
+    return waitForMultiple(objs, 1, true, readTimeout(base, timeoutAddr),
+                           alertable);
+}
 
 thread_local uint64_t t_kthreadBlock = 0; // bloco real p/ o KTHREAD opaco
 
@@ -254,7 +286,7 @@ void real_NtAllocateVirtualMemory(PPCContext& ctx, uint8_t* base) {
     // MEM_COMMIT sem X_MEM_NOZERO entrega memória zerada (kernel real)
     if ((allocType & kMemCommit) && !(allocType & kMemNoZero) &&
         validGuest(addr, 1)) {
-        memset(base + addr, 0, size);
+        memset(base + (uint32_t)addr, 0, size);
     }
     w32(base, pBase, (uint32_t)addr);
     w32(base, pSize, (uint32_t)size);
@@ -454,11 +486,18 @@ void real_KeQueryPerformanceFrequency(PPCContext& ctx, uint8_t* base) {
 // --------------------------------------------------------------- espera
 
 void real_KeDelayExecutionThread(PPCContext& ctx, uint8_t* base) {
-    // (Mode, Alertable, PLARGE_INTEGER Interval) — negativo = relativo
+    // (Mode, Alertable, PLARGE_INTEGER Interval) — negativo = relativo,
+    // unidades de 100 ns; NULL = kNoTimeout (tratado como espera nula —
+    // o kernel real exige intervalo válido; guest nunca passa NULL aqui)
     const uint64_t pInterval = ctx.r5.u64;
     const int64_t val = readTimeout(base, pInterval);
-    int64_t ns = val < 0 ? -val * 100ull : 0;
-    if (val == 0) ns = 0; // teste imediato
+    int64_t ns = 0;
+    if (val != kNoTimeout && val < 0) ns = -(val + 1) * 100ull + 100ull;
+    else if (val != kNoTimeout && val > 0) {
+        // ABSOLUTO (epoch 1601, 100ns): espera o RESTANTE real até lá
+        const int64_t now100 = (int64_t)systemTime100ns();
+        ns = (val > now100) ? (val - now100) * 100ll : 0;
+    }
     static Throttle t;
     if (t.shouldLog(24, 512)) {
         RLOG("KeDelayExecutionThread(%lld 100ns = %.3f ms)", (long long)val,
@@ -985,9 +1024,14 @@ void real_RtlCompareMemory(PPCContext& ctx, uint8_t* base) {
     const uint64_t a = ctx.r3.u64, b = ctx.r4.u64, len = ctx.r5.u64;
     uint64_t n = 0;
     if (validGuest(a, 1) && validGuest(b, 1)) {
-        const uint8_t* pa = base + a;
-        const uint8_t* pb = base + b;
-        while (n < len && pa[n] == pb[n]) ++n;
+        // 32-bit EA + limite REAL pela memória mapeada (len do guest pode ser
+        // lixo sign-extendido — nunca ler além da RAM guest)
+        const uint8_t* pa = base + (uint32_t)a;
+        const uint8_t* pb = base + (uint32_t)b;
+        const uint64_t aLeft = guestMemBytes() - (uint32_t)a;
+        const uint64_t bLeft = guestMemBytes() - (uint32_t)b;
+        const uint64_t lim = std::min(len, std::min(aLeft, bLeft));
+        while (n < lim && pa[n] == pb[n]) ++n;
     }
     ctx.r3.u64 = n;
 }
@@ -1311,7 +1355,7 @@ void real_vswprintf(PPCContext& ctx, uint8_t* base) {
             return validGuest(slot, 4) ? g32(base, slot) : 0;
         };
     }
-    const int n = guestFormatW((uint16_t*)(base + dst),
+    const int n = guestFormatW((uint16_t*)(base + (uint32_t)dst),
                                std::min<uint64_t>(cnt, 0x4000), fmt, args);
     ctx.r3.u32 = (uint32_t)(int32_t)n;
 }
@@ -1576,21 +1620,53 @@ void real_XamLoaderTerminateTitle(PPCContext& ctx, uint8_t* base) {
 
 void real_XexLoadImage(PPCContext& ctx, uint8_t* base) {
     // (PCSZZ pszName, DWORD dwFlags, DWORD dwMinimumVersion, PHANDLE pHandle)
-    // Módulos de SISTEMA (xam.xex, xboxkrnl.exe) existem sempre no console:
-    // aqui são módulos VIRTUAIS com as exports que o título importa (stubs
-    // reais na imagem — ver registro no boot). Qualquer outro nome falha
-    // como no console (arquivo inexistente no volume do sistema).
-    const std::string name = readGuestCString(ctx.r3.u64, 64);
+    // Módulos de SISTEMA (xam.xex, xboxkrnl.exe): sempre presentes no console
+    // — aqui são módulos VIRTUAIS cujas exports são os stubs recompilados que
+    // o título importa. Outros nomes: XEX secundário REAL (ex.
+    // "game:\XMediaFacade_default.xex") — lido do storage do jogo, decodificado
+    // (mesmo pipeline do loader) e mapeado na memória guest; as exports vêm
+    // da tabela XEX_HEADER_EXPORTS_BY_NAME do módulo.
+    const std::string name = readGuestCString(ctx.r3.u64, 128);
     const uint64_t pHandle = ctx.r6.u64;
     if (name.empty() || !validGuest(pHandle, 4)) {
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    const uint32_t handle = registerModule(name, 0, {});
+    if (const KernelModule* m = findModuleByName(name)) {
+        w32(base, pHandle, m->handle);
+        ctx.r3.u32 = STATUS_SUCCESS;
+        static Throttle t;
+        if (t.shouldLog(4, 64)) {
+            RLOG("XexLoadImage(\"%s\") = 0x%08X (já carregado)", name.c_str(),
+                 m->handle);
+        }
+        return;
+    }
+    // XEX secundário: caminho guest → relativo ao volume (game:\x → x)
+    std::string rel = name;
+    for (const char* pre : {"game:\\", "game:", "D:\\", "d:\\"}) {
+        const size_t n = strlen(pre);
+        if (rel.size() > n && strncasecmp(rel.c_str(), pre, n) == 0) {
+            rel = rel.substr(n);
+            break;
+        }
+    }
+    std::replace(rel.begin(), rel.end(), '\\', '/');
+    uint32_t handle = 0;
+    if (fsBridge()) {
+        handle = fh2::ppc::loadSecondaryModule(*fsBridge(), rel, name);
+    }
+    if (handle == 0) {
+        // honesto: arquivo ausente/inválido — mesmo status do console
+        RLOG("XexLoadImage(\"%s\") = OBJECT_NAME_NOT_FOUND (arquivo ausente "
+             "ou inválido no storage do jogo)", name.c_str());
+        ctx.r3.u32 = 0xC0000034u; // STATUS_OBJECT_NAME_NOT_FOUND
+        return;
+    }
     w32(base, pHandle, handle);
     ctx.r3.u32 = STATUS_SUCCESS;
-    RLOG("XexLoadImage(\"%s\", flags=0x%X) = 0x%08X", name.c_str(),
-         ctx.r4.u32, handle);
+    RLOG("XexLoadImage(\"%s\", flags=0x%X) = 0x%08X (módulo carregado)",
+         name.c_str(), ctx.r4.u32, handle);
 }
 
 void real_XexUnloadImage(PPCContext& ctx, uint8_t* base) {

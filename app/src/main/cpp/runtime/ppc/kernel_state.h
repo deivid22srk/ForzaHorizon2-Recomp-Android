@@ -176,14 +176,19 @@ uint32_t registerHandle(Waitable* w);
 /** NtClose: remove handle (o objeto por endereço permanece p/ Ke*). */
 void closeHandle(uint32_t handle);
 
-/** Espera REAL em um conjunto de waitables. timeoutNs: negativo =
- *  relativo (convertido), 0 = sem espera, positivo = absoluto (tratado
- *  como relativo com log). Retorna índice do sinalizado ou WAIT_TIMEOUT. */
+/** Espera REAL em um conjunto de waitables. timeout em unidades de 100 ns
+ *  (PLARGE_INTEGER NT real): kNoTimeout (INT64_MIN) = espera INFINITA
+ *  bloqueante (cv, acorda em sinal/stop); 0 = poll; negativo = RELATIVO
+ *  (x×100ns); positivo = ABSOLUTO (epoch 1601-01-01, mesmo relógio de
+ *  systemTime100ns). Retorna índice do sinalizado ou kWaitTimeout. */
 constexpr uint32_t kWaitSignaled0 = 0;
 constexpr uint32_t kWaitAbandoned0 = 64;   // base p/ abandoned
 constexpr uint32_t kWaitTimeout = 0x00000102; // STATUS_TIMEOUT
+/** Sentinela "sem timeout" (ponteiro PLARGE_INTEGER NULL do guest).
+ *  NUNCA usar -1: intervalo relativo -1 no NT é um wait REAL de 100ns. */
+constexpr int64_t kNoTimeout = INT64_MIN;
 uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
-                         int64_t timeoutNs, bool alertable);
+                         int64_t timeout, bool alertable);
 /** Sinaliza event (retorna estado anterior). */
 long setEvent(Waitable* w);
 /** Reseta event (retorna estado anterior). */
@@ -281,6 +286,8 @@ void fileClose(uint32_t handle);
 void filesCloseAll();
 /** Registra o FsProvider usado por fileOpen (chamado no boot). */
 void setFsBridge(fs::FsProvider* fs);
+/** Acesso ao FsProvider registrado (XexLoadImage de módulos secundários). */
+fs::FsProvider* fsBridge();
 
 // ---------------------------------------------------------------- TLS
 

@@ -95,6 +95,20 @@ PpcRuntime::~PpcRuntime() {
     // fecha arquivos guest abertos (fds de SAF/local) antes de desmapear
     kern::filesCloseAll();
     if (memBase_) {
+        // Threads guest podem ainda estar executando (loops que não passam
+        // por waits bloqueantes não conseguem fazer unwind via stop).
+        // Desmapear a memória sob uma thread viva = SIGSEGV garantido
+        // (faults pós-run no log host 16_09: 0x8f5010ac, 0x91507ed8).
+        kern::requestStop();
+        const size_t alive = kern::joinAll(5000);
+        if (alive > 0) {
+            // Processo encerrando: manter o mapeamento é seguro (o kernel
+            // do host o recolhe no exit) e evita crash das threads remanescentes.
+            PLOG("~PpcRuntime: %zu thread(s) guest ainda viva(s) — memória "
+                 "guest mantida mapeada (abandono deliberado)", alive);
+            memBase_ = 0;
+            return;
+        }
         munmap(reinterpret_cast<void*>(memBase_), kMemTotal);
         memBase_ = 0;
     }

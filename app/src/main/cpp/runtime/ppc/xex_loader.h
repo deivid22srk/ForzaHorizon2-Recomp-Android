@@ -71,4 +71,19 @@ struct XexImageInfo {
 bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
                   XexImageInfo& out, std::string& error);
 
+/**
+ * Carrega um XEX SECUNDÁRIO do storage do jogo (ex.: XMediaFacade_default.xex,
+ * pedido em runtime via XexLoadImage("game:\\XMediaFacade_default.xex")).
+ *
+ * Real: lê o arquivo via FsProvider, decodifica (AES+decompressão), mapeia na
+ * região de módulos (0x98000000+), captura imports e parseia a tabela de
+ * exports (XEX_HEADER_EXPORTS_BY_NAME — IMAGE_EXPORT_DIRECTORY do PE) e
+ * registra o módulo no kernel. Retorna o handle (0 = falha honesta).
+ *
+ * @param relPath caminho relativo ao volume ("XMediaFacade_default.xex")
+ * @param displayName caminho original (para o registro/log)
+ */
+uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
+                             const std::string& displayName);
+
 } // namespace fh2::ppc

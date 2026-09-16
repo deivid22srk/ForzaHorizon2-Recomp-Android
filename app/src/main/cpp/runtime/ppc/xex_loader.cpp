@@ -16,9 +16,11 @@
 
 #include <android/log.h>
 #include <cstring>
+#include <map>
 #include <vector>
 
 #include "runtime/fs/fs_provider.h"
+#include "runtime/ppc/kernel_state.h"
 #include "image.h"
 #include "xex.h"
 
@@ -206,6 +208,142 @@ bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
                         out.tlsTotalSize, out.tlsNumberOfSlots,
                         out.tlsBaseAddr);
     return true;
+}
+
+// ------------------------------------------------- XEX secundário (runtime)
+
+// Região de módulos carregados em runtime (dentro da RAM flat do título,
+// acima das alocações do FH2 — 0x82000000..0x8F500000 já em uso no boot).
+// Colocação DETERMINÍSTICA: as exports são calculadas relativas a esta base.
+constexpr uint64_t kModuleRegionBase = 0x98000000ull;
+constexpr uint64_t kModuleRegionSize = 0x07000000ull; // 112 MB
+uint64_t g_moduleRegionNext = kModuleRegionBase;
+
+namespace {
+
+inline uint32_t be32r(const uint8_t* p) {
+    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+}
+
+/** Parseia a tabela de exports (XEX_HEADER_EXPORTS_BY_NAME) do XEX
+ *  decodificado. Formato real: o header opcional aponta para
+ *  {u32 size, u32 offset} — offset é o RVA de um IMAGE_EXPORT_DIRECTORY PE
+ *  cujas sub-tabelas (AddressOfFunctions/Names/NameOrdinals) são RVAs
+ *  relativos ao PRÓPRIO diretório. Retorna ordinal → VA absoluto. */
+std::map<uint32_t, uint32_t> parseExportTable(const uint8_t* fileData,
+                                              size_t fileSize,
+                                              uint8_t* imageHost,
+                                              uint32_t imageBase,
+                                              uint32_t moduleVa) {
+    std::map<uint32_t, uint32_t> out;
+    // percorre os headers opcionais procurando 0x00E10402
+    if (fileSize < 0x18) return out;
+    const uint32_t headerCount = be32r(fileData + 0x14);
+    const uint8_t* opt = fileData + 0x18;
+    const uint8_t* dirInFile = nullptr;
+    for (uint32_t i = 0; i < headerCount; ++i) {
+        const size_t off = size_t(i) * 8;
+        if (off + 8 > fileSize - 0x18) break;
+        const uint32_t key = be32r(opt + off);
+        const uint32_t val = be32r(opt + off + 4);
+        if (key == 0x00E10402) {
+            if (size_t(val) + 8 <= fileSize) dirInFile = fileData + val;
+            break;
+        }
+    }
+    if (!dirInFile) return out; // módulo sem exports — vazio (real)
+    const uint32_t dirRva = be32r(dirInFile + 4);
+    if (dirRva == 0) return out;
+    // IMAGE_EXPORT_DIRECTORY na imagem decodificada (host ptr)
+    const uint8_t* d = imageHost + dirRva;
+    const uint32_t numberOfFunctions = be32r(d + 0x14);
+    const uint32_t numberOfNames = be32r(d + 0x18);
+    const uint32_t addrFunctions = be32r(d + 0x1C);   // RVA rel. ao diretório
+    const uint32_t addrNameOrdinals = be32r(d + 0x24); // RVA rel. ao diretório
+    (void)numberOfNames;
+    if (numberOfFunctions == 0 || addrFunctions == 0) return out;
+    const uint8_t* funcTable = d + addrFunctions;
+    const uint8_t* ordTable = d + addrNameOrdinals;
+    // exports "por ordinal": ordinal N → funcTable[N] (RVA rel. ao módulo)
+    for (uint32_t ord = 0; ord < numberOfFunctions; ++ord) {
+        const uint32_t rva = be32r(funcTable + ord * 4);
+        if (rva == 0) continue;
+        // no console: export VA = moduleBase + RVA (XexGetProcedureAddress
+        // devolve o endereço absoluto da função no espaço do título)
+        out[ord + 1] = moduleVa + rva;
+    }
+    (void)ordTable;
+    return out;
+}
+
+} // namespace
+
+uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
+                             const std::string& displayName) {
+    // 1) leitura REAL do arquivo do jogo
+    std::vector<uint8_t> fileData;
+    if (!fs.readFile(relPath, fileData)) {
+        __android_log_print(ANDROID_LOG_WARN, "FH2/XEX",
+                            "XEX secundário '%s' não pôde ser lido do "
+                            "storage do jogo", displayName.c_str());
+        return 0;
+    }
+    if (fileData.size() < sizeof(Xex2Header) + sizeof(Xex2SecurityInfo)) {
+        __android_log_print(ANDROID_LOG_WARN, "FH2/XEX",
+                            "XEX secundário '%s' truncado (%zu bytes)",
+                            displayName.c_str(), fileData.size());
+        return 0;
+    }
+    const auto* header = reinterpret_cast<const Xex2Header*>(fileData.data());
+    if (header->magic != 0x58455832u) {
+        __android_log_print(ANDROID_LOG_WARN, "FH2/XEX",
+                            "XEX secundário '%s': magic inválido",
+                            displayName.c_str());
+        return 0;
+    }
+    // 2) decodificação REAL (mesmo pipeline do default.xex)
+    std::vector<Xex2ImportRecord> importRecords;
+    Image image = Xex2LoadImageEx(fileData.data(), fileData.size(),
+                                  &importRecords);
+    if (image.data == nullptr || image.size == 0 ||
+        image.data[0] != 'M' || image.data[1] != 'Z') {
+        __android_log_print(ANDROID_LOG_WARN, "FH2/XEX",
+                            "XEX secundário '%s': decodificação falhou",
+                            displayName.c_str());
+        return 0;
+    }
+    // 3) colocação determinística na região de módulos
+    const uint64_t align = 0x10000ull;
+    uint64_t placed = (g_moduleRegionNext + align - 1) & ~(align - 1);
+    if (placed + image.size > kModuleRegionBase + kModuleRegionSize) {
+        __android_log_print(ANDROID_LOG_ERROR, "FH2/XEX",
+                            "região de módulos esgotada p/ '%s'",
+                            displayName.c_str());
+        return 0;
+    }
+    uint8_t* guestMem = fh2::kern::guestMem();
+    if (!guestMem) return 0;
+    memcpy(guestMem + placed, image.data.get(), image.size);
+    g_moduleRegionNext = placed + image.size;
+    const uint32_t moduleVa = (uint32_t)placed;
+
+    // 4) exports reais (IMAGE_EXPORT_DIRECTORY)
+    auto exports = parseExportTable(fileData.data(), fileData.size(),
+                                    image.data.get(), (uint32_t)image.base,
+                                    moduleVa);
+
+    // 5) registro no kernel (imports capturados ficam p/ diagnóstico — as
+    //    exports do módulo são o que o título resolve)
+    std::map<uint32_t, uint32_t> expMap = exports;
+    const uint32_t handle =
+        fh2::kern::registerModule(displayName, 0, expMap);
+    __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
+                        "XEX secundário carregado: %s base=0x%08X size=%u "
+                        "exports=%zu (handle 0x%08X)",
+                        displayName.c_str(), moduleVa, image.size,
+                        expMap.size(), handle);
+    return handle;
 }
 
 } // namespace fh2::ppc

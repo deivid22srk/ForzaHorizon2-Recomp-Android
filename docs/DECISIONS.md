@@ -386,3 +386,42 @@ Com D26–D29, o `_xstart` do FH2 executa ponta a ponta no host: CRT completo
 (>57.000 chamadas HLE, 246 critical sections, threads do engine via
 ExCreateThread), verificação de recurso/hash OK e RETORNO LIMPO da main do
 guest — sem dirty disc, sem travamento, sem crash.
+
+## D31 — Sign-extension de EAs, waits NT reais e teardown seguro (2026-09-16)
+
+Log de device `16_09-10-27-24_754.log` (moto g34, tombstone nativo) + boot
+REAL no host (hostrun, 35,6M chamadas HLE) revelaram três defeitos de raiz,
+todos corrigidos com semântica real — nada simulado:
+
+1. **SIGSEGV em `real_ExCreateThread+156`** (fault `0x6e1fc2d6c0` = base +
+   `0xFFFFFFFF8342B6C0`): o guest PPC64 carrega endereços com EXTENSÃO DE
+   SINAL nos registradores (comprovado: `r3=FFFFFFFF820CF1CC` nos traces).
+   `g32/g64/w32/w64` faziam aritmética com o valor 64-bit NÃO mascarado —
+   `validGuest` mascarava só na validação. Fix: máscara `(uint32_t)` dentro
+   dos 4 acessores (ponto único) + 3 sítios de acesso direto (memset de
+   commit, RtlCompareMemory com clamp pela RAM, guestFormatW). 2ª chamada de
+   ExCreateThread do boot (start 0x825CBB80) agora executa.
+
+2. **Spin infinito do worker (1,6M iterações/s)**: `readTimeout` devolvia -1
+   como "infinito", mas `waitForMultiple` interpretava -1 como relativo →
+   deadline de 1ns → `STATUS_TIMEOUT` imediato. Além disso unidades erradas
+   (NT usa 100ns, não ns). Fix: sentinela `kNoTimeout` (INT64_MIN) →
+   `cv.wait` sem deadline (bloqueio real); relativo ×100 → ns; absoluto
+   (epoch 1601) convertido com `systemTime100ns()`; `waitOne(nullptr)` =
+   `STATUS_INVALID_HANDLE` (semântica NT). Worker do jogo agora dorme no
+   event até o main sinalizar — CPU liberada.
+
+3. **Threads sobreviventes + teardown**: pós-run, loops guest que não passam
+   por waits bloqueantes não fazem unwind; o `munmap` da RAM guest sob elas
+   = rajada de SIGSEGV pós-`run retornou`. Fix: `waitForMultiple` faz
+   longjmp-unwind quando acorda por stop (padrão KeDelay/critsec) e
+   `~PpcRuntime` faz requestStop+joinAll(5s) e, se algo sobreviver, mantém o
+   mapeamento deliberadamente (processo encerrando) em vez de desmapear.
+
+Validação no host: boot completo ponta a ponta — 35,6M chamadas HLE, threads
+do engine reais, XamLoaderGetLaunchData/SetLaunchData, XexLoadImage de módulo
+secundário (`game:\XMediaFacade_default.xex` → leitura FsProvider OK —
+resolução de volume `game:\` verificada com probe), relaunch XAM do launcher
+(8 ciclos, guarda de loop operando) e `rc=0` SEM nenhum SIGSEGV, incluindo o
+teardown. No device, a falha de módulo secundário ausente (dump incompleto)
+agora produz log explícito em vez de tela preta silenciosa.

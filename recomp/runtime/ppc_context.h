@@ -127,9 +127,32 @@ static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? 
 
 #define PPC_LOOKUP_FUNC(x, y) *(PPCFunc**)(x + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + (uint64_t(uint32_t(y) - PPC_CODE_BASE) * 2))
 
+// Chamada indireta COM GUARDA: endereços fora da faixa de código gerado
+// (ex.: função de um módulo XEX secundário carregado em tempo de execução —
+// XMediaFacade etc. — cujo código ainda não passou pelo pipeline) NÃO podem
+// ler a tabela mágica fora dos limites (SIGSEGV selvagem). O desvio vai para
+// um thunk de diagnóstico REAL: loga o endereço alvo (throttled) e retorna
+// r3 = 0 — comportamento definido e visível no logcat, nunca simulado.
 #ifndef PPC_CALL_INDIRECT_FUNC
-#define PPC_CALL_INDIRECT_FUNC(x) (PPC_LOOKUP_FUNC(base, x))(ctx, base)
+#define PPC_CALL_INDIRECT_FUNC(x) do { \
+    const uint32_t fh2ea_ = (uint32_t)(x); \
+    PPCFunc* fh2fn_ = nullptr; \
+    if (fh2ea_ >= (uint32_t)PPC_CODE_BASE && \
+        fh2ea_ <  (uint32_t)(PPC_CODE_BASE + PPC_CODE_SIZE)) { \
+        fh2fn_ = PPC_LOOKUP_FUNC(base, fh2ea_); \
+    } \
+    if (fh2fn_ == nullptr) { \
+        fh2_guest_unmappedTarget = fh2ea_; \
+        fh2_guest_unmapped_code(ctx, base); \
+        break; \
+    } \
+    fh2fn_(ctx, base); \
+} while (0)
 #endif
+
+// thunk de diagnóstico (definido no runtime — kernel_real.cpp)
+extern "C" void fh2_guest_unmapped_code(struct PPCContext& ctx, uint8_t* base);
+extern "C" uint32_t fh2_guest_unmappedTarget;
 
 typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
 

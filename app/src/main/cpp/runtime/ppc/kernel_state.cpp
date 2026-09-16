@@ -344,10 +344,16 @@ void wakeAll() {
 }
 
 uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
-                         int64_t timeoutNs, bool alertable) {
-    // timeout: negativo = relativo; 0 = teste; positivo = absoluto
-    // (convertido com log — hosts não têm o epoch do console).
-    (void)alertable;
+                         int64_t timeout, bool alertable) {
+    // timeout em unidades de 100 ns (PLARGE_INTEGER NT real):
+    //   kNoTimeout (INT64_MIN) = espera INFINITA (NULL do guest)
+    //   0                      = teste imediato (poll)
+    //   negativo               = RELATIVO (-x = x×100ns a partir de agora)
+    //   positivo               = ABSOLUTO (epoch 1601-01-01, 100ns) — o mesmo
+    //                            relógio de systemTime100ns(); convertemos p/
+    //                            relativo com o relógio do host REAL
+    // (void)alertable: entrega de APC user-mode ainda não modelada; waits
+    // alertáveis retornam pelos mesmos critérios dos não-alertáveis.
     if (count == 0) return kWaitTimeout;
 
     std::unique_lock<std::mutex> lk(g_waitM);
@@ -372,23 +378,56 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
         return firstSignaled;
     };
 
-    if (timeoutNs == 0) return pred() ? consume() : kWaitTimeout;
-
-    int64_t rel = timeoutNs;
-    if (rel > 0) {
-        KLOG("wait com timeout ABSOLUTO %lld — tratado como relativo",
-             (long long)rel);
-    } else {
-        rel = -rel;
+    if (timeout == kNoTimeout) {
+        // INFINITO de verdade: bloqueia até sinal externo (NtSetEvent,
+        // ReleaseSemaphore/Mutant, closeHandle, wakeAll/stop) — sem deadline.
+        // Era AQUI que o worker do FH2 girava: o antigo sentinel -1 virava
+        // deadline de 1ns → 0x102 instantâneo → spin de milhões de iterações.
+        g_waitCv.wait(lk, [&] { return pred() || g_stop; });
+        if (!pred()) {
+            // stop: UNWIND da thread guest (padrão KeDelay/critsec) — sem
+            // isso threads em loops de espera sobrevivem ao joinAll e
+            // segfaultam no teardown (faults pós-run no log host 16_09).
+            lk.unlock();
+            jmp_buf* env = unwindTarget();
+            if (env) longjmp(*env, 1);
+            return kWaitTimeout; // não-guest: timeout p/ caller decidir
+        }
+        return consume();
     }
+    if (timeout == 0) {
+        if (g_stop && !pred()) {
+            lk.unlock();
+            jmp_buf* env = unwindTarget();
+            if (env) longjmp(*env, 1);
+        }
+        return pred() ? consume() : kWaitTimeout;
+    }
+
+    int64_t ns;
+    if (timeout < 0) {
+        ns = -(timeout + 1) * 100ll + 100ll; // relativo: ×100 → ns (sem overflow)
+    } else {
+        // absoluto epoch 1601 (100ns) → restante relativo
+        const int64_t now100 = (int64_t)systemTime100ns();
+        if (timeout <= now100) return pred() ? consume() : kWaitTimeout;
+        ns = (timeout - now100) * 100ll;
+    }
+    if (ns <= 0) return pred() ? consume() : kWaitTimeout;
     const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::nanoseconds(rel);
+                          std::chrono::nanoseconds(ns);
     bool ok = g_waitCv.wait_until(lk, deadline, [&] {
         return pred() || g_stop;
     });
     if (!pred()) {
         (void)ok;
-        return kWaitTimeout; // timeout ou stop — caller decide
+        if (g_stop) {
+            // stop durante espera com timeout: unwind (mesma semântica)
+            lk.unlock();
+            jmp_buf* env = unwindTarget();
+            if (env) longjmp(*env, 1);
+        }
+        return kWaitTimeout;
     }
     return consume();
 }
@@ -564,6 +603,7 @@ namespace fh2::kern {
 
 fs::FsProvider* g_fsBridge = nullptr;
 void setFsBridge(fs::FsProvider* fs) { g_fsBridge = fs; }
+fs::FsProvider* fsBridge() { return g_fsBridge; }
 
 uint32_t g_nextFileHandle = 0x60000000;
 std::map<uint32_t, std::unique_ptr<GuestFile>> g_files;
