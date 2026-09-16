@@ -629,7 +629,7 @@ bool VulkanBackend::ensureFrontBufferResources(uint32_t rowBytes, uint32_t w,
     vkBindImageMemory(device_, fbImage_, fbMemory_, 0);
     fbWidth_ = w;
     fbHeight_ = h;
-    fbFormat_ = xenosFormat;
+    fbFormat_ = 6; // k_8_8_8_8 — único formato neste caminho
     VLOG("front buffer: recursos prontos (%ux%u, %llu bytes staging)",
          w, h, (unsigned long long)needed);
     return true;
