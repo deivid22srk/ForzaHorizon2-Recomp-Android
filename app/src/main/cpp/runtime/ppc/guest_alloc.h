@@ -48,8 +48,9 @@ class GuestVirtWindow {
 public:
     void init(uint64_t base, uint64_t bytes, uint64_t page = 0x1000);
 
-    /** Aloca `size` bytes alinhados à página. 0 = falhou. */
-    uint64_t alloc(uint64_t size);
+    /** Aloca `size` bytes alinhados à página (ou `align` se maior).
+     *  0 = falhou. */
+    uint64_t alloc(uint64_t size, uint64_t align = 0);
     /** Aloca em endereço específico (NtAllocateVirtualMemory com base
      *  preferida). 0 = falhou (faixa ocupada/fora da janela). */
     uint64_t allocAt(uint64_t addr, uint64_t size);
@@ -57,6 +58,16 @@ public:
 
     /** Tamanho do bloco que contém addr (0 se nenhum). */
     uint64_t blockSize(uint64_t addr) const;
+
+    /** Região de endereçamento contendo `addr` DENTRO da janela:
+     *  base/size do bloco comprometido (committed=true) ou do vão livre
+     *  (committed=false). false = addr fora da janela. */
+    bool regionAt(uint64_t addr, uint64_t& base, uint64_t& size,
+                  bool& committed) const;
+
+    /** true se [addr, addr+size) está inteiramente dentro de um bloco já
+     *  alocado (usado p/ COMMIT dentro de RESERVE — kernel real permite). */
+    bool containsRange(uint64_t addr, uint64_t size) const;
 
     uint64_t base() const { return base_; }
     uint64_t size() const { return size_; }

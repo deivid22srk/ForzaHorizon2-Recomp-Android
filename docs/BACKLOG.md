@@ -30,11 +30,20 @@ override via FH2_XENONRECOMP_REPO/FH2_XENONRECOMP_BRANCH.
 
 ## Kernel/IO (runtime)
 
-- [x] **Imports do XEX**: 388 imports despachados — 75 com SEMÂNTICA REAL
+- [x] **Imports do XEX**: 388 imports despachados — 78 com SEMÂNTICA REAL
       (heap/janela virtual, tempo, threads guest reais, events/semaphores/
       mutants, KeTls*, critical sections, printf/DbgPrint reais sobre memória
       guest, XamInputGetState real, Mm* físicas), 26 com falha REAL do estado
       (FS/perfis/rede ainda indisponíveis), 287 stubs log-once (2026-09-16)
+- [x] **Boot do CRT resolvido** (2026-09-16, D25): o guest saía por
+      HalReturnToFirmware(1) em 7 ms porque NtAllocateVirtualMemory usava
+      assinatura errada (size em r5 em vez de *r4; tipo em r6 em vez de r5).
+      Com a assinatura real do xboxkrnl (Xenia como referência), LARGE_PAGES
+      64k, commit-dentro-de-reserva e NtQueryVirtualMemory real, o CRT cria
+      o heap inicial e o boot PROSSEGUE (validado no host: 60 s executando).
+- [x] **Rastreio HLE** (2026-09-16, D25): traceCall/traceReturn nos 388
+      imports (ring de 256 + dump FH2/TRACE no encerramento) — o próximo
+      log do device mostra a sequência exata de HLE que o guest executar.
 - [x] **Chamada do entry**: `0x82BF2CD0` chamado de verdade (guest_entry.cpp):
       tabela mágica de 128.708 funções populada na memória guest, PPCContext
       com stack 16 MB + TLS do XEX_HEADER_TLS_INFO, CRT `_xstart` executa

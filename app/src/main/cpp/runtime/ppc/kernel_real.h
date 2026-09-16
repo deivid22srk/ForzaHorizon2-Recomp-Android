@@ -39,6 +39,7 @@ void real_KeSetCurrentProcessType(PPCContext& ctx, uint8_t* base);
 void real_KeGetCurrentThread(PPCContext& ctx, uint8_t* base);
 void real_NtAllocateVirtualMemory(PPCContext& ctx, uint8_t* base);
 void real_NtFreeVirtualMemory(PPCContext& ctx, uint8_t* base);
+void real_NtQueryVirtualMemory(PPCContext& ctx, uint8_t* base);
 void real_NtCreateEvent(PPCContext& ctx, uint8_t* base);
 void real_NtSetEvent(PPCContext& ctx, uint8_t* base);
 void real_NtClearEvent(PPCContext& ctx, uint8_t* base);
@@ -87,7 +88,21 @@ void real_XamInputGetCapabilities(PPCContext& ctx, uint8_t* base);
 void real_XamInputGetCapabilitiesEx(PPCContext& ctx, uint8_t* base);
 void real_XamInputSetState(PPCContext& ctx, uint8_t* base);
 void real_XamGetCurrentTitleId(PPCContext& ctx, uint8_t* base);
+void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base);
+void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base);
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base);
+
+// ------------------------------------------------------- rastreio HLE
+//
+// Diagnóstico REAL do boot: cada import chamado pelo guest é registrado
+// (nome, r3..r6 de entrada, r3 de retorno) num ring buffer. Os primeiros
+// N segundos/calls também vão para o log; no encerramento (HalReturnTo
+// Firmware/ExTerminateThread/bugcheck/fim do main) o ring é despejado —
+// mostrando a sequência EXATA que levou ao fim do guest.
+void traceCall(const char* name, const PPCContext& ctx);  // antes da impl
+void traceReturn(const char* name, const PPCContext& ctx); // depois
+/** Despeja as últimas chamadas registradas (ordem) com um motivo. */
+void traceDump(const char* reason);
 
 } // namespace fh2::kern
 

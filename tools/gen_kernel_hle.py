@@ -50,6 +50,7 @@ REAL = {
     'MmGetPhysicalAddress', 'MmQueryAllocationSize',
     'MmCreateKernelStack', 'MmDeleteKernelStack',
     'NtAllocateVirtualMemory', 'NtFreeVirtualMemory',
+    'NtQueryVirtualMemory',
     'NtClearEvent', 'NtClose', 'NtCreateEvent', 'NtCreateMutant',
     'NtCreateSemaphore', 'NtReleaseMutant', 'NtReleaseSemaphore',
     'NtSetEvent', 'NtSignalAndWaitForSingleObjectEx',
@@ -67,7 +68,9 @@ REAL = {
     '_snprintf', '_vsnprintf', 'sprintf', 'vsprintf', 'vswprintf',
     'XamInputGetCapabilities', 'XamInputGetCapabilitiesEx',
     'XamInputGetState', 'XamInputSetState',
-    'XamGetCurrentTitleId', 'XamUserGetSigninState',
+    'XamGetCurrentTitleId',
+    'XamLoaderGetLaunchDataSize', 'XamLoaderGetLaunchData',
+    'XamUserGetSigninState',
 }
 
 # ---- falhas honestas: o recurso real não existe neste boot ----
@@ -139,23 +142,29 @@ for name in needed:
         n_real += 1
         body.append(f'// {name}: semântica REAL (kernel_real.cpp)')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
+        body.append(f'    fh2::kern::traceCall("{name}", ctx);')
         body.append(f'    fh2::kern::real_{name}(ctx, base);')
+        body.append(f'    fh2::kern::traceReturn("{name}", ctx);')
     elif name in FAILURE:
         n_fail += 1
         status, why = FAILURE[name]
         body.append(f'// {name}: falha REAL — {why}')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
         body.append(f'    (void)base;')
+        body.append(f'    fh2::kern::traceCall("{name}", ctx);')
         body.append(f'    FH2_HLE_ONCE({name}, "{why}");')
         body.append(f'    ctx.r3.u32 = 0x{status:08X}u;')
+        body.append(f'    fh2::kern::traceReturn("{name}", ctx);')
     else:
         n_stub += 1
         note = NOTES.get(name, 'semântica real pendente (issue #16)')
         body.append(f'// {name}: {note}')
         body.append(f'void __imp__{name}(PPCContext& ctx, uint8_t* base) {{')
         body.append(f'    (void)base;')
+        body.append(f'    fh2::kern::traceCall("{name}", ctx);')
         body.append(f'    FH2_HLE_ONCE({name}, "{note}");')
         body.append('    ctx.r3.u32 = 0;')
+        body.append(f'    fh2::kern::traceReturn("{name}", ctx);')
     body.append('}')
     body.append('')
 

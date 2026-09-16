@@ -258,3 +258,48 @@ honestamente documentada, agora resolvida com o núcleo de execução real:
    506 TUs gerados com g++ e executa o mesmo caminho do app (loader → tabela
    mágica → entry), medindo até onde o boot do jogo avança e quais HLE são
    acionados — resultado registrado no BACKLOG/commit.
+
+## D25 — Boot congelava em 7 ms: assinatura REAL do NtAllocateVirtualMemory + rastreio HLE (2026-09-16)
+
+O device logava `HalReturnToFirmware(1)` 7 ms após o entry: o CRT do título
+criava o heap inicial, `sub_82BFFC18` devolvia 0 e o entry encerrava (único
+caminho do jogo para HalReturnToFirmware — confirmado disassemblando o XEX
+decodificado com bootdump/strdump locais). O despejo do novo rastreio HLE no
+BOOT REAL NO HOST mostrou a causa exata: a primeira chamada do guest era
+`NtAllocateVirtualMemory` e o runtime devolvia STATUS_INVALID_PARAMETER —
+a assinatura antiga (&Base, ZeroBits, &Size, Type, Protect) está ERRADA; a
+real (idêntica à do Xenia) é:
+
+    NtAllocateVirtualMemory(PVOID* BaseAddress, PSIZE_T RegionSize,
+        ULONG AllocationType, ULONG Protect, BOOLEAN DebugMemory)
+
+ou seja, o TAMANHO vem em *r4 (ponteiro) e o TIPO em r5 por valor —
+`0x60002000` = X_MEM_LARGE_PAGES|X_MEM_HEAP|X_MEM_RESERVE (página 64 KB).
+Correções com semântica real:
+
+1. **NtAllocateVirtualMemory**: assinatura correta, página 4k/64k por
+   X_MEM_LARGE_PAGES, tamanho negativo = absoluto, COMMIT dentro de RESERVE
+   já alocada retorna a base pedida (kernel real permite), memória zerada
+   salvo X_MEM_NOZERO, base/size escritos de volta, STATUS_NO_MEMORY real.
+2. **NtQueryVirtualMemory** (antes stub 0): consulta REAL do modelo de
+   memória (imagem+tabela mágica EXEC, heap RW, blocos da janela virtual,
+   vãos livres com MEM_FREE/PAGE_NOACCESS) — é o que o CRT usa para decidir
+   onde criar o heap; MBI Xenon de 28 bytes big-endian.
+3. **NtFreeVirtualMemory**: assinatura real (&Base, &Size, FreeType, Debug).
+4. **MmAllocatePhysicalMemoryEx**: alinhamento vem em r7 (era lido de r8 =
+   TAG — com tag tipo 'XINF' o pedido ficava gigante e falhava).
+5. **XamLoaderGetLaunchDataSize/GetLaunchData**: boot frio real (size=0 +
+   ERROR_SUCCESS / ERROR_NOT_FOUND) em vez de stub 0 sem escrever o size.
+6. **Rastreio HLE** (traceCall/traceReturn gerados pelo gen_kernel_hle.py
+   para os 388 imports): ring buffer de 256 entradas com args/retorno; os
+   primeiros 3000 calls vão ao log; o ring é despejado em FH2/TRACE quando o
+   guest encerra (HalReturnToFirmware/ExTerminateThread/bugcheck/fim do
+   main) — mostra a sequência EXATA que levou ao fim, no device.
+7. **GuestVirtWindow::alloc(size, align)**: alinhamento > página (64k),
+   regionAt() e containsRange() para a consulta/alocação honestas.
+
+Validação no host (hostrun_boot.sh, 503 TUs): o guest passa pelo boot do CRT
+(2× NtAllocateVirtualMemory OK, KeGetCurrentProcessType=1, critical section
+no heap novo) e continua EXECUTANDO (60 s sem sair, watchdog interrompeu) —
+antes encerrava em 7 ms. hostcheck: 100% dos TUs do runtime + amostra de 70
+gerados compilam.

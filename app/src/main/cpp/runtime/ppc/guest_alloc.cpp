@@ -108,24 +108,34 @@ uint64_t GuestVirtWindow::used() const {
     return used;
 }
 
-uint64_t GuestVirtWindow::alloc(uint64_t size) {
+uint64_t GuestVirtWindow::alloc(uint64_t size, uint64_t align) {
     if (size == 0) size = page_;
     size = (size + page_ - 1) & ~(page_ - 1);
+    if (align < page_) align = page_;
+    align = (align + page_ - 1) & ~(page_ - 1);
 
     std::lock_guard<std::mutex> lk(m_);
     if (base_ == 0) return 0;
 
     for (auto it = freeRanges_.begin(); it != freeRanges_.end(); ++it) {
-        if (it->second < size) continue;
-        const uint64_t addr = it->first;
-        const uint64_t rest = it->second - size;
+        const uint64_t aligned = (it->first + align - 1) & ~(align - 1);
+        const uint64_t pad = aligned - it->first;
+        if (pad + size > it->second) continue;
+        const uint64_t addr = aligned;
+        const uint64_t rest = it->second - pad - size;
+        const uint64_t rangeStart = it->first;
         freeRanges_.erase(it);
+        if (pad > 0) freeRanges_[rangeStart] = pad;
         if (rest > 0) freeRanges_[addr + size] = rest;
         blocks_[addr] = size;
         return addr;
     }
-    const uint64_t aligned = (nextFree_ + page_ - 1) & ~(page_ - 1);
-    if (aligned + size > base_ + size_) return 0;
+    const uint64_t aligned = (nextFree_ + align - 1) & ~(align - 1);
+    if (aligned < nextFree_ || aligned + size > base_ + size_) return 0;
+    if (aligned > nextFree_) {
+        // buraco de alinhamento entre o cursor e o bloco volta como livre
+        freeRanges_[nextFree_] = aligned - nextFree_;
+    }
     nextFree_ = aligned + size;
     blocks_[aligned] = size;
     return aligned;
@@ -193,6 +203,50 @@ uint64_t GuestVirtWindow::blockSize(uint64_t addr) const {
     std::lock_guard<std::mutex> lk(m_);
     auto it = blocks_.find(addr & ~(page_ - 1));
     return it == blocks_.end() ? 0 : it->second;
+}
+
+bool GuestVirtWindow::regionAt(uint64_t addr, uint64_t& base, uint64_t& size,
+                               bool& committed) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0 || addr < base_ || addr >= base_ + size_) return false;
+
+    // bloco comprometido contendo addr?
+    auto next = blocks_.upper_bound(addr);
+    if (next != blocks_.begin()) {
+        auto prev = std::prev(next);
+        const uint64_t b = prev->first, e = b + prev->second;
+        if (addr < e) {
+            base = b;
+            size = e - b;
+            committed = true;
+            return true;
+        }
+    }
+    // vão livre: do fim do bloco anterior (ou início da janela) até o
+    // início do próximo bloco (ou fim da janela)
+    uint64_t lo = base_, hi = base_ + size_;
+    if (next != blocks_.begin()) {
+        auto prev = std::prev(next);
+        lo = prev->first + prev->second;
+    }
+    if (next != blocks_.end()) hi = next->first;
+    if (lo < base_) lo = base_;
+    if (hi > base_ + size_) hi = base_ + size_;
+    if (addr < lo || addr >= hi) return false; // não deveria ocorrer
+    base = lo;
+    size = hi - lo;
+    committed = false;
+    return true;
+}
+
+bool GuestVirtWindow::containsRange(uint64_t addr, uint64_t size) const {
+    std::lock_guard<std::mutex> lk(m_);
+    if (base_ == 0 || size == 0) return false;
+    auto it = blocks_.upper_bound(addr);
+    if (it == blocks_.begin()) return false;
+    --it;
+    const uint64_t b = it->first, e = b + it->second;
+    return addr >= b && addr + size <= e;
 }
 
 } // namespace fh2::ppc

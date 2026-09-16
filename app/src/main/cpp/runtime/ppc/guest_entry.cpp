@@ -21,6 +21,7 @@
 #include "ppc_config.h"
 #include "ppc_context.h"
 #include "ppc_recomp_shared.h"
+#include "runtime/ppc/kernel_real.h"
 #include "runtime/ppc/kernel_state.h"
 #include "runtime/ppc/xex_loader.h"
 
@@ -194,6 +195,7 @@ void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
     if (jump == 0) {
         GLOG("chamando entry do guest (EXECUÇÃO REAL)…");
         entry(ctx, base);
+        fh2::kern::traceDump("guest main retornou");
         GLOG("guest main RETORNOU (lr=0x%08llX, r3=0x%08X) — boot concluído "
              "ou main saiu", (unsigned long long)ctx.lr,
              (unsigned)ctx.r3.u32);

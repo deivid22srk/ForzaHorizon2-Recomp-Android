@@ -24,7 +24,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <thread>
 
 #include "runtime/input/input_state.h"
@@ -185,32 +187,75 @@ void real_ExFreePool(PPCContext& ctx, uint8_t* base) {
 }
 
 void real_NtAllocateVirtualMemory(PPCContext& ctx, uint8_t* base) {
-    // (&Base, ZeroBits, &Size, Type, Protect) — 5 args
-    const uint64_t pBase = ctx.r3.u64, pSize = ctx.r5.u64;
-    uint64_t wantBase = 0, size = 0;
-    if (validGuest(pBase, 4)) wantBase = g32(base, pBase);
-    if (validGuest(pSize, 4)) size = g32(base, pSize);
-    if (size == 0) {
+    // Assinatura REAL do xboxkrnl (idêntica à do Xenia):
+    //   (PVOID* BaseAddress, PSIZE_T RegionSize, ULONG AllocationType,
+    //    ULONG Protect, BOOLEAN DebugMemory)
+    // r5 = tipo: X_MEM_* (0x1000 COMMIT, 0x2000 RESERVE, 0x20000000
+    //      LARGE_PAGES 64k, 0x40000000 HEAP, 0x800000 NOZERO …)
+    // r6 = proteção (X_PAGE_*: 4 = READWRITE), r7 = debug memory.
+    constexpr uint32_t kMemCommit = 0x1000, kMemReserve = 0x2000,
+                      kMemReset = 0x80000, kMemNoZero = 0x800000,
+                      kMemLargePages = 0x20000000;
+
+    const uint64_t pBase = ctx.r3.u64;   // PVOID* (in/out)
+    const uint64_t pSize = ctx.r4.u64;   // PSIZE_T (in/out, 4 bytes no Xenon)
+    const uint32_t allocType = (uint32_t)ctx.r5.u64;
+    (void)ctx.r6;                        // Protect (nossa memória é RW|X)
+    (void)ctx.r7;                        // DebugMemory (devkit) = 0
+
+    if (!validGuest(pBase, 4) || !validGuest(pSize, 4)) {
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    uint64_t addr = wantBase ? virtWindow().allocAt(wantBase, size)
-                             : virtWindow().alloc(size);
-    if (!addr) {
-        ctx.r3.u32 = STATUS_NO_MEMORY;
-        RLOG("NtAllocateVirtualMemory(%s%llu) falhou (espaço)",
-             wantBase ? "base fixa " : "", (unsigned long long)size);
+    const uint32_t wantBase = g32(base, pBase);
+    const int32_t sizeRaw = (int32_t)g32(base, pSize);
+    if (sizeRaw == 0 || !(allocType & (kMemCommit | kMemReserve | kMemReset))) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
-    if (validGuest(pBase, 4)) w32(base, pBase, (uint32_t)addr);
-    if (validGuest(pSize, 4)) w32(base, pSize, (uint32_t)size);
+    // página 64k com X_MEM_LARGE_PAGES; negativo = tamanho absoluto
+    const uint64_t page = (allocType & kMemLargePages) ? 0x10000 : 0x1000;
+    uint64_t size = sizeRaw < 0 ? -(uint64_t)sizeRaw : (uint64_t)sizeRaw;
+    size = (size + page - 1) & ~(page - 1);
+
+    uint64_t addr = 0;
+    if (wantBase != 0) {
+        const uint64_t alignedBase = wantBase & ~(page - 1);
+        addr = virtWindow().allocAt(alignedBase, size);
+        if (!addr && virtWindow().containsRange(alignedBase, size)) {
+            // COMMIT dentro de uma RESERVA existente: no kernel real a
+            // região reservada passa a committed; no nosso modelo a memória
+            // já é acessível — sucesso com a base pedida.
+            addr = alignedBase;
+        }
+    } else {
+        addr = virtWindow().alloc(size, page);
+    }
+    if (!addr) {
+        ctx.r3.u32 = STATUS_NO_MEMORY;
+        RLOG("NtAllocateVirtualMemory(size=%llu page=%lluk base=%08X "
+             "type=%08X) = NO_MEMORY",
+             (unsigned long long)size, (unsigned long long)(page >> 10),
+             wantBase, allocType);
+        return;
+    }
+    // MEM_COMMIT sem X_MEM_NOZERO entrega memória zerada (kernel real)
+    if ((allocType & kMemCommit) && !(allocType & kMemNoZero) &&
+        validGuest(addr, 1)) {
+        memset(base + addr, 0, size);
+    }
+    w32(base, pBase, (uint32_t)addr);
+    w32(base, pSize, (uint32_t)size);
     ctx.r3.u32 = STATUS_SUCCESS;
-    RLOG("NtAllocateVirtualMemory(base=%llu size=%llu) = 0x%08X",
-         (unsigned long long)wantBase, (unsigned long long)size,
-         (unsigned)addr);
+    static Throttle t;
+    if (t.shouldLog(24, 512)) {
+        RLOG("NtAllocateVirtualMemory(size=%llu type=%08X) = 0x%08X",
+             (unsigned long long)size, allocType, (unsigned)addr);
+    }
 }
 
 void real_NtFreeVirtualMemory(PPCContext& ctx, uint8_t* base) {
+    // (PVOID* BaseAddress, PSIZE_T RegionSize, ULONG FreeType, BOOLEAN Debug)
     const uint64_t pBase = ctx.r3.u64;
     if (validGuest(pBase, 4)) {
         const uint64_t addr = g32(base, pBase);
@@ -219,15 +264,109 @@ void real_NtFreeVirtualMemory(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
+// NtQueryVirtualMemory(BaseAddress, PMEMORY_BASIC_INFORMATION) — consulta
+// REAL do modelo de memória do runtime: imagem+tabela mágica (EXEC), heap
+// (RW), janela virtual (blocos comprometidos) e vãos livres. É o que o CRT
+// do título usa para escolher onde criar o heap inicial.
+void real_NtQueryVirtualMemory(PPCContext& ctx, uint8_t* base) {
+    // (PVOID BaseAddress, PMEMORY_BASIC_INFORMATION MemoryInformation)
+    const uint64_t addr = ctx.r3.u64;
+    const uint64_t pMbi = ctx.r4.u64;
+    if (!validGuest(pMbi, 28) || addr < 0x80000000ull ||
+        addr >= 0xA0000000ull) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    constexpr uint64_t kUserLo = 0x80000000ull, kUserHi = 0xA0000000ull;
+    constexpr uint32_t kMemCommit = 0x1000, kMemFree = 0x10000;
+    constexpr uint32_t kMemImage = 0x1000000;
+    constexpr uint32_t kPageNoAccess = 0x01, kPageReadWrite = 0x04,
+                      kPageExecReadWrite = 0x40;
+
+    const uint64_t magicEnd =
+        PPC_IMAGE_BASE + PPC_IMAGE_SIZE +
+        ((PPC_CODE_SIZE * 2ull + 0xFFFFull) & ~0xFFFFull);
+    const uint64_t imageStart = PPC_IMAGE_BASE;
+    const uint64_t heapStart = heap().base();
+    const uint64_t heapEnd = heapStart ? heapStart + heap().size() : 0;
+    const uint64_t virtStart = virtWindow().base();
+    const uint64_t virtEnd = virtStart ? virtStart + virtWindow().size() : 0;
+
+    uint64_t rbase = 0, rsize = 0, aBase = 0;
+    uint32_t aProtect = kPageNoAccess, state = kMemFree,
+             protect = kPageNoAccess, type = 0;
+
+    if (addr >= imageStart && addr < magicEnd) {
+        // imagem carregada + tabela mágica de funções
+        rbase = imageStart;
+        rsize = magicEnd - imageStart;
+        aBase = imageStart;
+        aProtect = kPageExecReadWrite;
+        state = kMemCommit;
+        protect = kPageExecReadWrite;
+        type = kMemImage;
+    } else if (heapStart && addr >= heapStart && addr < heapEnd) {
+        rbase = heapStart;
+        rsize = heapEnd - heapStart;
+        aBase = heapStart;
+        aProtect = kPageReadWrite;
+        state = kMemCommit;
+        protect = kPageReadWrite;
+    } else if (virtStart && addr >= virtStart && addr < virtEnd) {
+        uint64_t b = 0, s = 0;
+        bool committed = false;
+        if (!virtWindow().regionAt(addr, b, s, committed)) {
+            ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+            return;
+        }
+        rbase = b;
+        rsize = s;
+        if (committed) {
+            aBase = b;
+            aProtect = kPageReadWrite;
+            state = kMemCommit;
+            protect = kPageReadWrite;
+        }
+    } else {
+        // vão livre até a próxima zona comprometida
+        uint64_t lo = kUserLo, hi = kUserHi;
+        const std::pair<uint64_t, uint64_t> zones[] = {
+            {imageStart, magicEnd}, {heapStart, heapEnd},
+            {virtStart, virtEnd}};
+        for (const auto& z : zones) {
+            if (z.second <= addr && z.second > lo) lo = z.second;
+            if (z.first > addr && z.first < hi) hi = z.first;
+        }
+        rbase = lo;
+        rsize = hi - lo;
+    }
+
+    w32(base, pMbi + 0, (uint32_t)rbase);
+    w32(base, pMbi + 4, (uint32_t)aBase);
+    w32(base, pMbi + 8, (uint32_t)aProtect);
+    w32(base, pMbi + 12, (uint32_t)rsize);
+    w32(base, pMbi + 16, (uint32_t)state);
+    w32(base, pMbi + 20, (uint32_t)protect);
+    w32(base, pMbi + 24, (uint32_t)type);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
 void real_MmAllocatePhysicalMemoryEx(PPCContext& ctx, uint8_t* base) {
-    // (Type, Size, MinAddr, MaxAddr, Alignment, Tag) — 6 args
+    // (Flags/Type, Size, MinAddr, MaxAddr, Alignment, Tag) — 6 args:
+    // r3=tipo, r4=tamanho, r5=min, r6=max, r7=ALINHAMENTO, r8=tag.
+    // Alinhamento real (r7) com clamp sano — tag (r8) NÃO é alinhamento.
     const uint64_t size = ctx.r4.u64;
-    const uint64_t align = ctx.r8.u64 ? ctx.r8.u64 : 0x1000;
+    uint64_t align = ctx.r7.u64;
+    if (align < 0x1000) align = 0x1000;             // páginas 4k no mínimo
+    if (align > 0x1000000) align = 0x1000000;       // sanity: 16 MB max
     const uint64_t addr = virtWindow().alloc((size + align - 1) & ~(align - 1));
     ctx.r3.u64 = addr;
     if (!addr) {
-        RLOG("MmAllocatePhysicalMemoryEx(size=%llu align=%llu) = NULL",
-             (unsigned long long)size, (unsigned long long)align);
+        RLOG("MmAllocatePhysicalMemoryEx(type=%u size=%llu min=%08X max=%08X "
+             "align=%llu tag=%08X) = NULL (janela cheia?)",
+             (unsigned)ctx.r3.u32, (unsigned long long)size,
+             (unsigned)ctx.r5.u32, (unsigned)ctx.r6.u32,
+             (unsigned long long)align, (unsigned)ctx.r8.u32);
     }
 }
 
@@ -551,6 +690,7 @@ void real_ExCreateThread(PPCContext& ctx, uint8_t* base) {
 
 void real_ExTerminateThread(PPCContext& ctx, uint8_t* base) {
     // longjmp para o corpo da thread (código 2 = término limpo)
+    traceDump("ExTerminateThread");
     jmp_buf* env = unwindTarget();
     if (env) longjmp(*env, 2);
     ctx.r3.u32 = STATUS_SUCCESS;
@@ -585,6 +725,7 @@ void real_KeBugCheck(PPCContext& ctx, uint8_t* base) {
          (unsigned)ctx.r3.u32);
     __android_log_print(ANDROID_LOG_ERROR, "FH2/KRN",
                         "guest BUGCHECK 0x%08X", (unsigned)ctx.r3.u32);
+    traceDump("KeBugCheck");
     jmp_buf* env = unwindTarget();
     if (env) longjmp(*env, 3);
 }
@@ -593,6 +734,7 @@ void real_KeBugCheckEx(PPCContext& ctx, uint8_t* base) {
     RLOG("KeBugCheckEx(code=0x%08X, %016llX, %016llX, %016llX) — bugcheck REAL",
          (unsigned)ctx.r3.u32, (unsigned long long)ctx.r4.u64,
          (unsigned long long)ctx.r5.u64, (unsigned long long)ctx.r6.u64);
+    traceDump("KeBugCheckEx");
     jmp_buf* env = unwindTarget();
     if (env) longjmp(*env, 3);
 }
@@ -600,6 +742,9 @@ void real_KeBugCheckEx(PPCContext& ctx, uint8_t* base) {
 void real_HalReturnToFirmware(PPCContext& ctx, uint8_t* base) {
     RLOG("HalReturnToFirmware(%u) — guest pediu desligamento/reboot",
          (unsigned)ctx.r3.u32);
+    // Despejo das últimas chamadas HLE: mostra a decisão REAL que fez o
+    // guest encerrar (ex.: heap inicial do CRT = 0 → HalReturnToFirmware(1)).
+    traceDump("HalReturnToFirmware");
     requestStop();
     jmp_buf* env = unwindTarget();
     if (env) longjmp(*env, 2);
@@ -1006,8 +1151,112 @@ void real_XamGetCurrentTitleId(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = currentTitleId();
 }
 
+// Boot frio real: SEM launch data (nenhum convite/continue/dashboard args).
+// XamLoaderGetLaunchDataSize: *pcb = 0, ERROR_SUCCESS — o título segue o
+// caminho normal de boot; XamLoaderGetLaunchData: ERROR_NOT_FOUND.
+void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base) {
+    if (validGuest(ctx.r3.u64, 4)) w32(base, ctx.r3.u64, 0);
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
+}
+
+void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
+    ctx.r3.u32 = 0x80070490u; // ERROR_NOT_FOUND — estado real (sem dados)
+}
+
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0; // sem perfil assinado (estado real v1: offline)
+}
+
+// ------------------------------------------------------------- rastreio
+
+namespace {
+
+constexpr size_t kTraceRingSize = 256;   // entradas do ring buffer
+constexpr uint64_t kTraceFullLogLimit = 3000; // primeiras N linhas no log
+constexpr uint64_t kTraceSampleEvery = 512;   // depois, 1 a cada N
+
+struct TraceEntry {
+    uint64_t seq;
+    char text[152];
+};
+
+struct TraceState {
+    std::mutex m;
+    TraceEntry ring[kTraceRingSize];
+    uint64_t next = 0;      // índice de escrita circular
+    uint64_t count = 0;     // total gravado
+    uint64_t seq = 0;
+};
+
+TraceState& traceState() {
+    static TraceState s;
+    return s;
+}
+
+thread_local uint64_t t_traceArgs[6] = {0, 0, 0, 0, 0, 0};
+thread_local bool t_traceHasArgs = false;
+
+} // namespace
+
+void traceCall(const char* name, const PPCContext& ctx) {
+    t_traceArgs[0] = ctx.r3.u64;
+    t_traceArgs[1] = ctx.r4.u64;
+    t_traceArgs[2] = ctx.r5.u64;
+    t_traceArgs[3] = ctx.r6.u64;
+    t_traceArgs[4] = ctx.r7.u64;
+    t_traceArgs[5] = ctx.r8.u64;
+    t_traceHasArgs = true;
+    (void)name;
+}
+
+void traceReturn(const char* name, const PPCContext& ctx) {
+    uint64_t a[6];
+    if (t_traceHasArgs) {
+        for (int i = 0; i < 6; ++i) a[i] = t_traceArgs[i];
+        t_traceHasArgs = false;
+    } else {
+        a[0] = ctx.r3.u64; // chamada sem traceCall (não deve ocorrer)
+        for (int i = 1; i < 6; ++i) a[i] = 0;
+    }
+    const uint64_t ret = ctx.r3.u64;
+
+    TraceState& s = traceState();
+    TraceEntry e;
+    e.seq = 0;
+    snprintf(e.text, sizeof(e.text),
+             "%-34s r3=%08llX r4=%08llX r5=%08llX -> %08llX",
+             name, (unsigned long long)a[0], (unsigned long long)a[1],
+             (unsigned long long)a[2], (unsigned long long)ret);
+    {
+        std::lock_guard<std::mutex> lk(s.m);
+        e.seq = s.seq;
+        s.ring[s.next % kTraceRingSize] = e;
+        ++s.next;
+        ++s.seq;
+        s.count = s.next;
+    }
+    const uint64_t n = e.seq + 1;
+    if (n <= kTraceFullLogLimit || (n % kTraceSampleEvery) == 0) {
+        RLOG("[TRACE %6llu] %s", (unsigned long long)n, e.text);
+    }
+}
+
+void traceDump(const char* reason) {
+    TraceState& s = traceState();
+    __android_log_print(ANDROID_LOG_WARN, "FH2/TRACE",
+                        "=== DUMP (%s) — últimas chamadas HLE ===", reason);
+    std::lock_guard<std::mutex> lk(s.m);
+    const uint64_t total = s.count;
+    const uint64_t start = total > kTraceRingSize ? total - kTraceRingSize : 0;
+    for (uint64_t i = start; i < total; ++i) {
+        const TraceEntry& e = s.ring[i % kTraceRingSize];
+        __android_log_print(ANDROID_LOG_WARN, "FH2/TRACE",
+                            "[%6llu] %s", (unsigned long long)(e.seq + 1),
+                            e.text);
+    }
+    __android_log_print(ANDROID_LOG_WARN, "FH2/TRACE",
+                        "=== FIM DO DUMP (%s) — %llu chamadas registradas ===",
+                        reason, (unsigned long long)total);
 }
 
 } // namespace fh2::kern
