@@ -151,6 +151,13 @@ void real_VdSetDisplayMode(PPCContext& ctx, uint8_t* base);
 void real_VdSetDisplayModeOverride(PPCContext& ctx, uint8_t* base);
 void real_VdInitializeScalerCommandBuffer(PPCContext& ctx, uint8_t* base);
 
+// criptografia / Object Manager / device control / cache do título
+void real_XeCryptSha(PPCContext& ctx, uint8_t* base);
+void real_ObCreateSymbolicLink(PPCContext& ctx, uint8_t* base);
+void real_NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base);
+void real_FscSetCacheElementCount(PPCContext& ctx, uint8_t* base);
+void real_XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base);
+
 // ------------------------------------------------------- rastreio HLE
 //
 // Diagnóstico REAL do boot: cada import chamado pelo guest é registrado

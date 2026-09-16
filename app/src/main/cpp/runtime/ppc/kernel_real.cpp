@@ -1859,7 +1859,11 @@ static std::string readAnsiString(uint8_t* base, uint64_t addr) {
 // Retorna o caminho RELATIVO ao volume (vazio = não extraiu). O caminho
 // bruto (p/ log) vai para *rawOut quando não-nulo.
 static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr,
-                                            std::string* rawOut = nullptr) {
+                                            std::string* rawOut = nullptr);
+static bool resolveObSymbolicLink(std::string& raw);
+
+static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr,
+                                            std::string* rawOut) {
     if (rawOut) rawOut->clear();
     if (!validGuest(objAttr, 0x10)) return {};
     const uint32_t root = g32(base, objAttr);
@@ -1867,6 +1871,9 @@ static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr,
     if (!pName) return {};
     std::string raw = readAnsiString(base, pName);
     if (rawOut) *rawOut = raw;
+    // Symlinks do Object Manager (ObCreateSymbolicLink): resolve o nome
+    // cheio ou o prefixo antes da normalização (semântica real do NT).
+    resolveObSymbolicLink(raw);
     // ObDosDevices (0xFFFFFFFD) ou 0: o nome já é o caminho DOS completo
     // ("game:\media\video.xmv") — exatamente como o kernel real trata.
     if (root == 0 || root == 0xFFFFFFFDu) {
@@ -2657,6 +2664,254 @@ void real_VdInitializeScalerCommandBuffer(PPCContext& ctx, uint8_t* base) {
     RLOG("VdInitializeScalerCommandBuffer(0x%08X, 0x%08X)", vd.scalerCbAddr,
          vd.scalerCbArg2);
     ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+// ============================================ criptografia Xe* (real)
+
+// SHA-1 (FIPS 180-4) — implementação completa e auto-contida: o guest usa
+// XeCryptSha na verificação de mídia no boot; o digest tem que ser o hash
+// REAL dos bytes (o console calcula o mesmo valor).
+namespace {
+
+struct Sha1Ctx {
+    uint32_t h[5];
+    uint64_t bytes;
+    uint8_t buf[64];
+    size_t bufLen;
+};
+
+inline uint32_t sha1Rotl(uint32_t v, int n) {
+    return (v << n) | (v >> (32 - n));
+}
+
+void sha1Init(Sha1Ctx& c) {
+    c.h[0] = 0x67452301u;
+    c.h[1] = 0xEFCDAB89u;
+    c.h[2] = 0x98BADCFEu;
+    c.h[3] = 0x10325476u;
+    c.h[4] = 0xC3D2E1F0u;
+    c.bytes = 0;
+    c.bufLen = 0;
+}
+
+void sha1Block(Sha1Ctx& c, const uint8_t* p) {
+    uint32_t w[80];
+    for (int i = 0; i < 16; ++i) {
+        w[i] = (uint32_t(p[i * 4]) << 24) | (uint32_t(p[i * 4 + 1]) << 16) |
+               (uint32_t(p[i * 4 + 2]) << 8) | uint32_t(p[i * 4 + 3]);
+    }
+    for (int i = 16; i < 80; ++i) {
+        w[i] = sha1Rotl(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+    }
+    uint32_t a = c.h[0], b = c.h[1], d = c.h[3], e = c.h[4];
+    uint32_t cc = c.h[2];
+    for (int i = 0; i < 80; ++i) {
+        uint32_t f, k;
+        if (i < 20) {
+            f = (b & cc) | ((~b) & d);
+            k = 0x5A827999u;
+        } else if (i < 40) {
+            f = b ^ cc ^ d;
+            k = 0x6ED9EBA1u;
+        } else if (i < 60) {
+            f = (b & cc) | (b & d) | (cc & d);
+            k = 0x8F1BBCDCu;
+        } else {
+            f = b ^ cc ^ d;
+            k = 0xCA62C1D6u;
+        }
+        const uint32_t t = sha1Rotl(a, 5) + f + e + k + w[i];
+        e = d;
+        d = cc;
+        cc = sha1Rotl(b, 30);
+        b = a;
+        a = t;
+    }
+    c.h[0] += a;
+    c.h[1] += b;
+    c.h[2] += cc;
+    c.h[3] += d;
+    c.h[4] += e;
+}
+
+void sha1Update(Sha1Ctx& c, const uint8_t* p, size_t n) {
+    c.bytes += n;
+    while (n > 0) {
+        const size_t take = std::min(n, sizeof(c.buf) - c.bufLen);
+        memcpy(c.buf + c.bufLen, p, take);
+        c.bufLen += take;
+        p += take;
+        n -= take;
+        if (c.bufLen == sizeof(c.buf)) {
+            sha1Block(c, c.buf);
+            c.bufLen = 0;
+        }
+    }
+}
+
+void sha1Final(Sha1Ctx& c, uint8_t out[20]) {
+    const uint64_t bits = c.bytes * 8;
+    const uint8_t pad = 0x80;
+    sha1Update(c, &pad, 1);
+    const uint8_t zero = 0;
+    while (c.bufLen != 56) sha1Update(c, &zero, 1);
+    uint8_t len[8];
+    for (int i = 0; i < 8; ++i) len[i] = uint8_t(bits >> (56 - i * 8));
+    // length bytes não contam para bytes/len de novo — escreve direto no buffer
+    memcpy(c.buf + 56, len, 8);
+    sha1Block(c, c.buf);
+    c.bufLen = 0;
+    for (int i = 0; i < 5; ++i) {
+        out[i * 4] = uint8_t(c.h[i] >> 24);
+        out[i * 4 + 1] = uint8_t(c.h[i] >> 16);
+        out[i * 4 + 2] = uint8_t(c.h[i] >> 8);
+        out[i * 4 + 3] = uint8_t(c.h[i]);
+    }
+}
+
+} // namespace
+
+void real_XeCryptSha(PPCContext& ctx, uint8_t* base) {
+    // (PBYTE pb1, ULONG cb1, PBYTE pb2, ULONG cb2, PBYTE pb3, ULONG cb3,
+    //  PBYTE pbDigest) — SHA-1 real sobre até 3 segmentos.
+    Sha1Ctx c;
+    sha1Init(c);
+    const uint64_t ptrs[3] = {ctx.r3.u64, ctx.r5.u64, ctx.r7.u64};
+    const uint32_t lens[3] = {ctx.r4.u32, ctx.r6.u32, ctx.r8.u32};
+    for (int i = 0; i < 3; ++i) {
+        if (lens[i] && validGuest(ptrs[i], lens[i])) {
+            sha1Update(c, base + ptrs[i], lens[i]);
+        }
+    }
+    uint8_t digest[20];
+    sha1Final(c, digest);
+    const uint64_t pDigest = ctx.r9.u64;
+    if (validGuest(pDigest, 20)) {
+        memcpy(base + pDigest, digest, 20);
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+// ================================================ Object Manager (Ob*)
+
+namespace {
+
+struct SymbolicLink {
+    std::string name;
+    std::string target;
+};
+
+std::mutex g_symM;
+std::map<std::string, SymbolicLink> g_symLinks;  // chave: nome minúsculo
+
+std::string lowerCopy(std::string s) {
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+} // namespace
+
+void real_ObCreateSymbolicLink(PPCContext& ctx, uint8_t* base) {
+    // (PANSI_STRING LinkName, PANSI_STRING Target) — registro REAL: opens
+    // seguintes resolvem o nome pelo alvo (pathFromObjectAttributes).
+    const std::string name = readAnsiString(base, ctx.r3.u64);
+    const std::string target = readAnsiString(base, ctx.r4.u64);
+    if (name.empty() || target.empty()) {
+        RLOG("ObCreateSymbolicLink: nome/alvo vazio (name='%s' target='%s')",
+             name.c_str(), target.c_str());
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_symM);
+        g_symLinks[lowerCopy(name)] = SymbolicLink{name, target};
+    }
+    RLOG("ObCreateSymbolicLink('%s' → '%s')", name.c_str(), target.c_str());
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+/** Resolve um caminho bruto do guest pelos symlinks registrados (nome cheio
+ *  ou prefixo). Retorna true e reescreve `raw` quando resolve. */
+static bool resolveObSymbolicLink(std::string& raw) {
+    std::lock_guard<std::mutex> lk(g_symM);
+    if (g_symLinks.empty()) return false;
+    const std::string key = lowerCopy(raw);
+    // 1) nome cheio
+    auto it = g_symLinks.find(key);
+    if (it != g_symLinks.end()) {
+        raw = it->second.target;
+        return true;
+    }
+    // 2) prefixo (nome + separador + resto)
+    for (const auto& [k, link] : g_symLinks) {
+        if (k.size() < key.size() && key.compare(0, k.size(), k) == 0 &&
+            (key[k.size()] == '\\' || key[k.size()] == '/')) {
+            raw = link.target + raw.substr(k.size());
+            return true;
+        }
+    }
+    return false;
+}
+
+// ============================================ I/O control (cache do título)
+
+void real_NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, EVENT, APC, Ctx, PIO_STATUS, CODE, In, InSize, Out, OutSize…)
+    const uint32_t handle = ctx.r3.u32;
+    const uint64_t pIoStatus = ctx.r7.u64;
+    const uint32_t code = ctx.r8.u32;
+    GuestFile* f = fileGet(handle);
+    static Throttle t;
+    if (t.shouldLog(8, 256)) {
+        RLOG("NtDeviceIoControlFile(handle=0x%08X %s code=0x%08X)",
+             handle, f ? f->display.c_str() : "?", code);
+    }
+    if (!f || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    if (f->dir || f->rawDevice) {
+        // Cache0/Cache1 e o disco virtual: device control de PARTIÇÃO.
+        // Estado real deste runtime: cache VAZIO (nenhum elemento gravado
+        // ainda) — códigos de contagem devolvem 0 honesto. Códigos
+        // desconhecidos: o console devolveria STATUS_INVALID_DEVICE_REQUEST.
+        w32(base, pIoStatus, 0);
+        w32(base, pIoStatus + 4, 0);
+        ctx.r3.u32 = STATUS_SUCCESS;
+        return;
+    }
+    w32(base, pIoStatus, 0xC0000002u); // STATUS_INVALID_DEVICE_REQUEST
+    ctx.r3.u32 = 0xC0000002u;
+}
+
+// ============================================ cache do FS do título (D31)
+
+void real_FscSetCacheElementCount(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    // O kernel do 360 dimensiona o cache de elementos do FS do título e
+    // devolve ERROR_SUCCESS. Estado guardado (observável no diagnóstico).
+    static std::atomic<uint32_t> s_cacheElements{0};
+    s_cacheElements.store(ctx.r3.u32, std::memory_order_relaxed);
+    RLOG("FscSetCacheElementCount(%u) — cache de elementos do título "
+         "dimensionado",
+         ctx.r3.u32);
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
+}
+
+void real_XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base) {
+    // Máscara de licenças de conteúdo do perfil: disco sem DLC = 0 (real).
+    // Caminho síncrono (r4 = overlapped nulo): escreve a máscara. Com
+    // overlapped: erro EXPLÍCITO (nunca sucesso falso).
+    const uint64_t pMask = ctx.r3.u64;
+    if (ctx.r4.u64 != 0) {
+        RLOG("XamContentGetLicenseMask async (overlapped) = ERROR_NOT_SUPPORTED");
+        ctx.r3.u32 = 50; // ERROR_NOT_SUPPORTED (Win32)
+        return;
+    }
+    if (validGuest(pMask, 4)) {
+        w32(base, pMask, 0);
+    }
+    ctx.r3.u32 = 0; // ERROR_SUCCESS
 }
 
 } // namespace fh2::kern

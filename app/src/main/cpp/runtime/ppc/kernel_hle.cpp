@@ -2,10 +2,10 @@
 //
 // GERADO por tools/gen_kernel_hle.py — 413 símbolos exigidos por
 // ppc_func_mapping.cpp. Três caminhos:
-//   REAL  (131): delega para fh2::kern::real_* com semântica real
+//   REAL  (136): delega para fh2::kern::real_* com semântica real
 //         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
-//   FAIL  (26): retorna status de falha REAL do estado do sistema
-//   stub  (256): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+//   FAIL  (25): retorna status de falha REAL do estado do sistema
+//   stub  (252): log-once + NTSTATUS 0 (semântica pendente — issue #16)
 // NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
@@ -111,12 +111,10 @@ void __imp__ExTerminateThread(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("ExTerminateThread", ctx);
 }
 
-// FscSetCacheElementCount: semântica real pendente (issue #16)
+// FscSetCacheElementCount: semântica REAL (kernel_real.cpp)
 void __imp__FscSetCacheElementCount(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("FscSetCacheElementCount", ctx);
-    FH2_HLE_ONCE(FscSetCacheElementCount, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_FscSetCacheElementCount(ctx, base);
     fh2::kern::traceReturn("FscSetCacheElementCount", ctx);
 }
 
@@ -1219,12 +1217,10 @@ void __imp__NtCreateTimer(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtCreateTimer", ctx);
 }
 
-// NtDeviceIoControlFile: falha REAL — IOCTL pendente
+// NtDeviceIoControlFile: semântica REAL (kernel_real.cpp)
 void __imp__NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtDeviceIoControlFile", ctx);
-    FH2_HLE_ONCE(NtDeviceIoControlFile, "IOCTL pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtDeviceIoControlFile(ctx, base);
     fh2::kern::traceReturn("NtDeviceIoControlFile", ctx);
 }
 
@@ -1431,12 +1427,10 @@ void __imp__ObCreateObject(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("ObCreateObject", ctx);
 }
 
-// ObCreateSymbolicLink: semântica real pendente (issue #16)
+// ObCreateSymbolicLink: semântica REAL (kernel_real.cpp)
 void __imp__ObCreateSymbolicLink(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("ObCreateSymbolicLink", ctx);
-    FH2_HLE_ONCE(ObCreateSymbolicLink, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_ObCreateSymbolicLink(ctx, base);
     fh2::kern::traceReturn("ObCreateSymbolicLink", ctx);
 }
 
@@ -2294,12 +2288,10 @@ void __imp__XamContentGetDeviceState(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamContentGetDeviceState", ctx);
 }
 
-// XamContentGetLicenseMask: semântica real pendente (issue #16)
+// XamContentGetLicenseMask: semântica REAL (kernel_real.cpp)
 void __imp__XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("XamContentGetLicenseMask", ctx);
-    FH2_HLE_ONCE(XamContentGetLicenseMask, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XamContentGetLicenseMask(ctx, base);
     fh2::kern::traceReturn("XamContentGetLicenseMask", ctx);
 }
 
@@ -3208,12 +3200,10 @@ void __imp__XeCryptRandom(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XeCryptRandom", ctx);
 }
 
-// XeCryptSha: semântica real pendente (issue #16)
+// XeCryptSha: semântica REAL (kernel_real.cpp)
 void __imp__XeCryptSha(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("XeCryptSha", ctx);
-    FH2_HLE_ONCE(XeCryptSha, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XeCryptSha(ctx, base);
     fh2::kern::traceReturn("XeCryptSha", ctx);
 }
 
