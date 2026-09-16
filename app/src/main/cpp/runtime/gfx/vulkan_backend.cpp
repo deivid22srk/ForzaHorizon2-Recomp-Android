@@ -18,6 +18,13 @@
 // com o VkResult e tratada (recreate/teardown) — sem sucesso falso.
 #include "vulkan_backend.h"
 
+// Exposta somente com o define de plataforma (header do NDK) — a superfície
+// Android (VK_KHR_android_surface + vkCreateAndroidSurfaceKHR) sai do modo
+// "declared" com isto antes do <vulkan/vulkan.h> (que o header inclui).
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#endif
+
 #include <android/log.h>
 #include <android/native_window.h>
 

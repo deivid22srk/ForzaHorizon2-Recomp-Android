@@ -18,6 +18,12 @@
 #include <mutex>
 #include <vector>
 
+// Plataforma Android p/ o header do NDK (superfície VK_KHR_android_surface).
+// Precisa estar definido ANTES de <vulkan/vulkan.h>.
+#ifndef VK_USE_PLATFORM_ANDROID_KHR
+#define VK_USE_PLATFORM_ANDROID_KHR 1
+#endif
+
 #include <vulkan/vulkan.h>
 
 #include "graphics_backend.h"
