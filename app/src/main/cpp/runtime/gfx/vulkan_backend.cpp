@@ -524,29 +524,7 @@ void VulkanBackend::onSurfaceLost() {
 
 // ------------------------------------------------------------- present
 
-void VulkanBackend::testPatternColor(float out[4]) const {
-    // Rotação de matiz REAL (12 s @60 fps) — prova visual de acquire/render/
-    // present contínuos. Substituído pelos pixels do Xenos na issue #17.
-    const float t = float(frameCounter_ % 720) / 720.0f;
-    const float h = t * 6.0f;
-    const float v = 0.45f + 0.10f * std::sin(float(frameCounter_) * 0.05f);
-    const float s = 0.85f;
-    const int i = int(h) % 6;
-    const float f = h - std::floor(h);
-    const float p = v * (1.0f - s);
-    const float q = v * (1.0f - s * f);
-    const float t2 = v * (1.0f - s * (1.0f - f));
-    float r = 0, g = 0, b = 0;
-    switch (i) {
-        case 0: r = v; g = t2; b = p; break;
-        case 1: r = q; g = v; b = p; break;
-        case 2: r = p; g = v; b = t2; break;
-        case 3: r = p; g = q; b = v; break;
-        case 4: r = t2; g = p; b = v; break;
-        default: r = v; g = p; b = q; break;
-    }
-    out[0] = r; out[1] = g; out[2] = b; out[3] = 1.0f;
-}
+
 
 bool VulkanBackend::present() {
     std::lock_guard<std::mutex> lock(gpuMutex_);
@@ -573,7 +551,10 @@ bool VulkanBackend::present() {
 
     vkResetFences(device_, 1, &inFlight_[f]);
 
-    // Record: render pass com clear REAL (padrão de teste do pipeline)
+    // Record: render pass com clear PRETO. O backend NÃO inventa conteúdo:
+    // enquanto o Xenos (processador de comandos, issue #17) não produzir o
+    // frame do título, a surface exibe preto — tela colorida aqui seria
+    // fingir que o jogo está rodando.
     VkCommandBuffer cb = cmds_[idx];
     vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -583,10 +564,8 @@ bool VulkanBackend::present() {
         return false;
     }
 
-    float col[4];
-    testPatternColor(col);
     VkClearValue clear{};
-    clear.color = {{col[0], col[1], col[2], col[3]}};
+    clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
     VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rp.renderPass = renderPass_;
     rp.framebuffer = framebuffers_[idx];
@@ -631,14 +610,18 @@ bool VulkanBackend::present() {
         return false;
     }
 
-    // Telemetria REAL de present (a cada 300 frames)
+    // Telemetria REAL de present (a cada 300 frames; primeira amostra
+    // descartada — o intervalo inclui o boot e não representa fps)
     if (frameCounter_ - lastFpsLog_ >= 300) {
-        static auto last = std::chrono::steady_clock::now();
         auto now = std::chrono::steady_clock::now();
-        double dt = std::chrono::duration<double>(now - last).count();
-        last = now;
-        VLOG("present: %llu frames no swapchain (%.1f fps medidos)",
-             (unsigned long long)frameCounter_, dt > 0 ? 300.0 / dt : 0.0);
+        if (lastPresentLog_ != std::chrono::steady_clock::time_point{}) {
+            double dt = std::chrono::duration<double>(now - lastPresentLog_).count();
+            if (dt > 0.5) {
+                VLOG("present: %llu frames no swapchain (%.1f fps medidos)",
+                     (unsigned long long)frameCounter_, 300.0 / dt);
+            }
+        }
+        lastPresentLog_ = now;
         lastFpsLog_ = frameCounter_;
     }
     return true;

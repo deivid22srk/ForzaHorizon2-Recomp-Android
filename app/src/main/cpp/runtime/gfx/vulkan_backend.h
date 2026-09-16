@@ -1,19 +1,21 @@
 // vulkan_backend.h — backend Vulkan REAL (prioritário; fallback GLES)
 //
-// Pipeline completo do marco "renderizar algo em Vulkan":
-//   instance → physical device → fila gráfica → device lógico →
-//   VkSurfaceKHR (Android) → swapchain (FIFO = vblank) → render pass →
-//   framebuffers → command buffers → sync (semáforos + fences) → present.
+// Pipeline completo: instance → physical device → fila gráfica → device
+// lógico → VkSurfaceKHR (Android) → swapchain (FIFO = vblank) → render
+// pass → framebuffers → command buffers → sync (semáforos + fences) →
+// present.
 //
-// O conteúdo do frame é o PADRÃO DE TESTE do pipeline (cor animada real,
-// renderizada por vkCmdClearAttachments dentro de um render pass real):
-// ele prova que acquire/render/submit/present funcionam no device do
-// usuário. Os PIXELS DO JOGO chegam com o processador de comandos Xenos
-// (issue #17) — o backend já entrega tudo que ele precisa (swapchain
-// recriável, fila, present bloqueante = vblank).
+// POLÍTICA DE CONTEÚDO: este backend NUNCA inventa pixels. Enquanto o
+// processador de comandos Xenos (issue #17) não produzir o frame real do
+// título, todo present é um clear PRETO — uma surface colorida aqui
+// fingiria que o jogo está rodando. Os pixels do jogo chegam quando o
+// processador de comandos estiver consumindo o ring buffer real do guest
+// (o backend já entrega tudo que ele precisa: swapchain recriável, fila,
+// present bloqueante = vblank).
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -70,8 +72,9 @@ private:
     // sem isso o próximo vkWaitForFences do slot bloquearia para sempre).
     void recreateFenceSignaled(uint32_t slot);
 
-    // padrão de teste REAL do pipeline (cor animada por frameCounter_)
-    void testPatternColor(float out[4]) const;
+    // padrão de teste REMOVIDO — o backend nunca inventa conteúdo: enquanto
+    // o Xenos não produzir frames reais a surface é preta
+    std::chrono::steady_clock::time_point lastPresentLog_{};
 
     std::mutex gpuMutex_;                 // present × surface × destruição
     std::atomic<int> resolutionScale_{75};

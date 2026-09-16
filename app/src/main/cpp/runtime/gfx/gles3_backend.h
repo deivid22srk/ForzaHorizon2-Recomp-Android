@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <EGL/egl.h>
 
@@ -47,6 +48,7 @@ private:
     std::mutex eglMutex_;                 // present (guest) × surface (UI thread)
     uint64_t frameCounter_ = 0;
     uint64_t lastFpsLog_ = 0;
+    std::chrono::steady_clock::time_point lastPresentLog_{};
 
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLContext context_ = EGL_NO_CONTEXT;

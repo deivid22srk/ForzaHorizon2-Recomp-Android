@@ -301,18 +301,22 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
         });
         guestStarted_ = true; // permanente: memória não pode ser desmapeada
         // Driver de frames ANTES do primeiro VdSwap: mantém o pipeline
-        // gráfico vivo (frames do backend — Vulkan/GLES) enquanto o guest
-        // boota. O primeiro flip do jogo (VdSwap) encerra o driver: a partir
-        // daí o ritmo é o do próprio título (semântica de vblank real).
+        // gráfico vivo (clear preto — sem conteúdo inventado) enquanto o
+        // guest boota. Encerra no PRIMEIRO VdSwap do jogo OU quando o guest
+        // termina (loop de relaunch esgotado/erro de boot) — apresentar
+        // frames com o título morto fingiria que o jogo está rodando.
+        std::atomic<bool> guestActive{true};
         std::thread presentDriver;
         if (gfx) {
-            presentDriver = std::thread([gfx, &stopRequested]() {
+            presentDriver = std::thread([gfx, &stopRequested, &guestActive]() {
                 const int fps = gfx->fpsTarget() > 0 ? gfx->fpsTarget() : 60;
                 const auto interval = std::chrono::milliseconds(1000 / fps);
                 PLOG("driver de frames ativo (%s @%d fps) até o primeiro "
-                     "VdSwap do guest",
+                     "VdSwap do guest (surface preta até lá — sem conteúdo "
+                     "inventado)",
                      gfx->name(), fps);
-                while (!stopRequested && kern::vdGraphics().swapCount == 0) {
+                while (!stopRequested && guestActive &&
+                       kern::vdGraphics().swapCount == 0) {
                     std::this_thread::sleep_for(interval);
                     gfx->present();
                 }
@@ -372,6 +376,7 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
             PLOG("relançando título (path=\"%s\" flags=0x%08X)",
                  relaunchPath.c_str(), relaunchFlags);
         }
+        guestActive = false; // título acabou: driver de frames NÃO apresenta mais
         if (presentDriver.joinable()) presentDriver.join();
         PLOG("run: guest concluído");
         return;
