@@ -97,7 +97,9 @@ extras = []
 for mod, dec in (("XMediaFacade", "XMediaFacade_default_dec.xex"),
                  ("SpeechFacade", "SpeechFacade_default_dec.xex")):
     if os.path.isfile(os.path.join(priv, dec)):
-        extras.append(f'"{dec}"')
+        # caminho RELATIVO ao FH2.toml (recomp/config/) — os decodificados
+        # ficam em recomp/private/
+        extras.append(f'"../private/{dec}"')
 if extras:
     out.append("")
     out.append("# Módulos secundários recompilados junto com o título (video/XMV e voz/XMA);")
