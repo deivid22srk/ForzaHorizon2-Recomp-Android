@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools/build
-          key: recomp-tools-${{ runner.os }}-v1
+          key: recomp-tools-${{ runner.os }}-v2
 
       # NOTA: sem cache de app/.cxx — o código gerado é recriado a cada run
       # (novos mtimes ⇒ ninja recompilaria tudo de qualquer forma), e objetos

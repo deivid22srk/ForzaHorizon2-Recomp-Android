@@ -308,8 +308,36 @@ long releaseSemaphore(Waitable* w, long count) {
     std::lock_guard<std::mutex> lk(g_waitM);
     const long prev = w->count;
     w->count = std::min(w->count + count, w->maxCount);
+    // créditos disponíveis sinalizam o waitable (semântica real do NT: um
+    // semáforo é "signaled" enquanto count > 0; o consume decrementa)
+    w->signaled = w->count > 0;
     g_waitCv.notify_all();
     return prev;
+}
+
+bool setTimerDue(Waitable* w, int64_t due100ns) {
+    if (!w) return false;
+    std::lock_guard<std::mutex> lk(g_waitM);
+    const bool wasPending = w->dueAbs100ns != 0;
+    if (due100ns < 0) {
+        // relativo: agora + (-due) — mesmo relógio do waitForMultiple
+        w->dueAbs100ns = systemTime100ns() + (uint64_t)(-(due100ns + 1)) + 1;
+    } else {
+        w->dueAbs100ns = (uint64_t)due100ns;
+    }
+    w->signaled = false;
+    g_waitCv.notify_all();
+    return wasPending;
+}
+
+bool cancelTimer(Waitable* w) {
+    if (!w) return false;
+    std::lock_guard<std::mutex> lk(g_waitM);
+    const bool wasPending = w->dueAbs100ns != 0;
+    w->dueAbs100ns = 0;
+    w->signaled = false;
+    g_waitCv.notify_all();
+    return wasPending;
 }
 
 long releaseMutant(Waitable* w, bool& abandoned) {
@@ -360,8 +388,18 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
 
     std::unique_lock<std::mutex> lk(g_waitM);
     auto pred = [&] {
-        for (size_t i = 0; i < count; ++i)
-            if (objs[i]->signaled) return true;
+        for (size_t i = 0; i < count; ++i) {
+            Waitable& w = *objs[i];
+            // timer vencido sinaliza LAZILY (one-shot) — sem thread de clock;
+            // wait_until acorda no vencimento (deadline combinado abaixo)
+            if (w.kind == WaitKind::Timer && w.dueAbs100ns != 0 && !w.signaled &&
+                systemTime100ns() >= w.dueAbs100ns) {
+                w.signaled = true;
+                w.dueAbs100ns = 0;
+                g_waitCv.notify_all();
+            }
+            if (w.signaled) return true;
+        }
         return false;
     };
     auto consume = [&]() -> uint32_t {
@@ -371,13 +409,47 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
             if (!w.signaled) continue;
             if (waitAny) {
                 if (w.autoReset) w.signaled = false;
+                // semáforo: consumir um crédito a cada wait bem-sucedido
+                if (w.kind == WaitKind::Semaphore && w.count > 0) {
+                    --w.count;
+                    w.signaled = w.count > 0;
+                }
                 return uint32_t(i) + (w.abandoned ? kWaitAbandoned0
                                                   : kWaitSignaled0);
             }
             if (firstSignaled == kWaitTimeout) firstSignaled = kWaitSignaled0;
             if (w.autoReset) w.signaled = false;
+            if (w.kind == WaitKind::Semaphore && w.count > 0) {
+                --w.count;
+                w.signaled = w.count > 0;
+            }
         }
         return firstSignaled;
+    };
+    // vencimento do timer agendado mais cedo (recalculado a cada iteração):
+    // dá ao wait infinito um deadline real para timers, sem thread de clock
+    auto timerDeadline = [&]() -> std::chrono::steady_clock::time_point {
+        std::chrono::steady_clock::time_point dl;
+        bool have = false;
+        const auto now = std::chrono::steady_clock::now();
+        for (size_t i = 0; i < count; ++i) {
+            const Waitable& w = *objs[i];
+            if (w.kind != WaitKind::Timer || w.dueAbs100ns == 0) continue;
+            const int64_t rel100 = (int64_t)w.dueAbs100ns -
+                                   (int64_t)systemTime100ns();
+            // clamp: rel100×100 ns não pode estourar int64 (5e15×100ns = ~14h
+            // — timers de jogo ficam MUITO abaixo disso)
+            const int64_t ns = rel100 <= 0 ? 0
+                                           : (rel100 > (int64_t)5e15
+                                                  ? (int64_t)5e15
+                                                  : rel100 * 100ll);
+            const auto d = now + std::chrono::nanoseconds(ns);
+            if (!have || d < dl) {
+                dl = d;
+                have = true;
+            }
+        }
+        return have ? dl : std::chrono::steady_clock::time_point::max();
     };
 
     if (timeout == kNoTimeout) {
@@ -385,17 +457,27 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
         // ReleaseSemaphore/Mutant, closeHandle, wakeAll/stop) — sem deadline.
         // Era AQUI que o worker do FH2 girava: o antigo sentinel -1 virava
         // deadline de 1ns → 0x102 instantâneo → spin de milhões de iterações.
-        g_waitCv.wait(lk, [&] { return pred() || g_stop; });
-        if (!pred()) {
-            // stop: UNWIND da thread guest (padrão KeDelay/critsec) — sem
-            // isso threads em loops de espera sobrevivem ao joinAll e
-            // segfaultam no teardown (faults pós-run no log host 16_09).
-            lk.unlock();
-            jmp_buf* env = unwindTarget();
-            if (env) longjmp(*env, 1);
-            return kWaitTimeout; // não-guest: timeout p/ caller decidir
+        // Timers agendados inserem um deadline REAL (sem thread de clock).
+        for (;;) {
+            const auto dl = timerDeadline();
+            if (dl == std::chrono::steady_clock::time_point::max()) {
+                g_waitCv.wait(lk, [&] { return pred() || g_stop; });
+            } else {
+                g_waitCv.wait_until(lk, dl, [&] { return pred() || g_stop; });
+            }
+            if (pred()) return consume();
+            if (g_stop) {
+                // stop: UNWIND da thread guest (padrão KeDelay/critsec) — sem
+                // isso threads em loops de espera sobrevivem ao joinAll e
+                // segfaultam no teardown (faults pós-run no log host 16_09).
+                lk.unlock();
+                jmp_buf* env = unwindTarget();
+                if (env) longjmp(*env, 1);
+                return kWaitTimeout; // não-guest: timeout p/ caller decidir
+            }
+            // timer reagendado no futuro durante o wait: loop recalcuma o
+            // deadline (timerDeadline() é recalculado a cada iteração)
         }
-        return consume();
     }
     if (timeout == 0) {
         if (g_stop && !pred()) {
@@ -416,22 +498,25 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
         ns = (timeout - now100) * 100ll;
     }
     if (ns <= 0) return pred() ? consume() : kWaitTimeout;
-    const auto deadline = std::chrono::steady_clock::now() +
-                          std::chrono::nanoseconds(ns);
-    bool ok = g_waitCv.wait_until(lk, deadline, [&] {
-        return pred() || g_stop;
-    });
-    if (!pred()) {
-        (void)ok;
+    const auto userDeadline = std::chrono::steady_clock::now() +
+                              std::chrono::nanoseconds(ns);
+    for (;;) {
+        // deadline combinado: timeout do usuário OU vencimento de timer
+        const auto tdl = timerDeadline();
+        const auto deadline = std::min(userDeadline, tdl);
+        g_waitCv.wait_until(lk, deadline, [&] { return pred() || g_stop; });
+        if (pred()) return consume();
         if (g_stop) {
             // stop durante espera com timeout: unwind (mesma semântica)
             lk.unlock();
             jmp_buf* env = unwindTarget();
             if (env) longjmp(*env, 1);
         }
-        return kWaitTimeout;
+        if (std::chrono::steady_clock::now() >= userDeadline)
+            return kWaitTimeout;
+        // acordou no vencimento de timer sem sinalizar? (relógio adiante) —
+        // o loop recalcula e continua esperando pelo timeout do usuário
     }
-    return consume();
 }
 
 // --------------------------------------------------------- title id

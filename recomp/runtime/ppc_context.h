@@ -125,22 +125,67 @@ static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? 
 
 #define PPC_MEMORY_SIZE 0x100000000ull
 
+typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
+
 #define PPC_LOOKUP_FUNC(x, y) *(PPCFunc**)(x + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + (uint64_t(uint32_t(y) - PPC_CODE_BASE) * 2))
 
-// Chamada indireta COM GUARDA: endereços fora da faixa de código gerado
-// (ex.: função de um módulo XEX secundário carregado em tempo de execução —
-// XMediaFacade etc. — cujo código ainda não passou pelo pipeline) NÃO podem
+// ---- Tabelas mágicas extras (módulos XEX secundários recompilados) ----
+// O pipeline (XenonRecomp multi-módulo) emite, por módulo, a faixa de código
+// e o VA guest da tabela extra — convenção de layout com ppc_runtime.cpp:
+// a janela [0x94800000, 0x98000000) é reservada (acima da janela virtual,
+// abaixo da fronteira do alias físico). Cada tabela extra cobre a faixa do
+// SEU módulo com o mesmo espaçamento da principal (8 bytes por 4 bytes de
+// código guest = 2 bytes de tabela por byte). PPCFuncMapping é único, mas o
+// endereço do slot decide a tabela.
+#ifndef PPC_EXTRA_COUNT
+#define PPC_EXTRA_COUNT 0
+#endif
+
+static inline PPCFunc** fh2_funcSlot(uint8_t* base, uint32_t addr)
+{
+    if (addr - (uint32_t)PPC_CODE_BASE < (uint32_t)PPC_CODE_SIZE)
+        return (PPCFunc**)(base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE +
+                           (uint64_t)(addr - (uint32_t)PPC_CODE_BASE) * 2);
+#if PPC_EXTRA_COUNT > 0
+    #if defined(PPC_EXTRA0_CODE_BASE) && !defined(PPC_CONFIG_NO_EXTRA0)
+    if (addr - (uint32_t)PPC_EXTRA0_CODE_BASE < (uint32_t)PPC_EXTRA0_CODE_SIZE)
+        return (PPCFunc**)(base + PPC_EXTRA0_TABLE_VA +
+                           (uint64_t)(addr - (uint32_t)PPC_EXTRA0_CODE_BASE) * 2);
+    #endif
+    #if defined(PPC_EXTRA1_CODE_BASE) && !defined(PPC_CONFIG_NO_EXTRA1)
+    if (addr - (uint32_t)PPC_EXTRA1_CODE_BASE < (uint32_t)PPC_EXTRA1_CODE_SIZE)
+        return (PPCFunc**)(base + PPC_EXTRA1_TABLE_VA +
+                           (uint64_t)(addr - (uint32_t)PPC_EXTRA1_CODE_BASE) * 2);
+    #endif
+    #if defined(PPC_EXTRA2_CODE_BASE) && !defined(PPC_CONFIG_NO_EXTRA2)
+    if (addr - (uint32_t)PPC_EXTRA2_CODE_BASE < (uint32_t)PPC_EXTRA2_CODE_SIZE)
+        return (PPCFunc**)(base + PPC_EXTRA2_TABLE_VA +
+                           (uint64_t)(addr - (uint32_t)PPC_EXTRA2_CODE_BASE) * 2);
+    #endif
+    #if defined(PPC_EXTRA3_CODE_BASE) && !defined(PPC_CONFIG_NO_EXTRA3)
+    if (addr - (uint32_t)PPC_EXTRA3_CODE_BASE < (uint32_t)PPC_EXTRA3_CODE_SIZE)
+        return (PPCFunc**)(base + PPC_EXTRA3_TABLE_VA +
+                           (uint64_t)(addr - (uint32_t)PPC_EXTRA3_CODE_BASE) * 2);
+    #endif
+#endif
+    return nullptr;
+}
+
+static inline PPCFunc* fh2_lookupFunc(uint8_t* base, uint32_t addr)
+{
+    PPCFunc** slot = fh2_funcSlot(base, addr);
+    return slot ? *slot : nullptr;
+}
+
+// Chamada indireta COM GUARDA: endereços fora das faixas de código gerado
+// (faixa do título + faixas dos módulos secundários recompilados) NÃO podem
 // ler a tabela mágica fora dos limites (SIGSEGV selvagem). O desvio vai para
 // um thunk de diagnóstico REAL: loga o endereço alvo (throttled) e retorna
 // r3 = 0 — comportamento definido e visível no logcat, nunca simulado.
 #ifndef PPC_CALL_INDIRECT_FUNC
 #define PPC_CALL_INDIRECT_FUNC(x) do { \
     const uint32_t fh2ea_ = (uint32_t)(x); \
-    PPCFunc* fh2fn_ = nullptr; \
-    if (fh2ea_ >= (uint32_t)PPC_CODE_BASE && \
-        fh2ea_ <  (uint32_t)(PPC_CODE_BASE + PPC_CODE_SIZE)) { \
-        fh2fn_ = PPC_LOOKUP_FUNC(base, fh2ea_); \
-    } \
+    PPCFunc* fh2fn_ = fh2_lookupFunc(base, fh2ea_); \
     if (fh2fn_ == nullptr) { \
         fh2_guest_unmappedTarget = fh2ea_; \
         fh2_guest_unmapped_code(ctx, base); \
@@ -153,8 +198,6 @@ static inline uint32_t fh2_rotl32(uint32_t v, unsigned s) { s &= 31; return s ? 
 // thunk de diagnóstico (definido no runtime — kernel_real.cpp)
 extern "C" void fh2_guest_unmapped_code(struct PPCContext& ctx, uint8_t* base);
 extern "C" uint32_t fh2_guest_unmappedTarget;
-
-typedef void PPCFunc(struct PPCContext& __restrict__ ctx, uint8_t* base);
 
 struct PPCFuncMapping
 {

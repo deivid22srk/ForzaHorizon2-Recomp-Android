@@ -3,6 +3,11 @@
 # Caminhos relativos a este arquivo (recomp/config/).
 # O XEX descriptografado fica em recomp/private/ (gitignored — conteúdo protegido).
 #
+# MÓDULOS SECUNDÁRIOS: XMediaFacade (vídeo/XMV) e SpeechFacade (voz/XMA)
+# são recompilados junto com o título via extra_file_paths — o bloco é
+# REGENERADO a cada run por tools/run_recomp.sh conforme a disponibilidade
+# real dos XEXs decodificados (recomp/private/*_dec.xex). NÃO editar à mão.
+
 # Jump tables: XenonAnalyse não detectou padrões no binário do FH2 (a lógica
 # atual é calibrada para Sonic Unleashed). Backlog rastreado em docs/BACKLOG.md
 # e issue #2. Sem a tabela, jump tables viram saltos indiretos genéricos.

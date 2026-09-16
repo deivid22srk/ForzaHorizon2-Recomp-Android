@@ -558,6 +558,69 @@ void real_KeReleaseMutant(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
+// ---- semáforos/timers do kernel (Ke* por ENDEREÇO de objeto guest) ----
+// Necessários aos módulos secundários recompilados (XMediaFacade/SpeechFacade
+// importam KeInitializeSemaphore/KeReleaseSemaphore/Ke*Timer); o par
+// NtCreateSemaphore/NtReleaseSemaphore (por HANDLE) já existia.
+
+void real_KeInitializeSemaphore(PPCContext& ctx, uint8_t* base) {
+    // (Semaphore, Count, Limit) — objeto guest por endereço
+    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Semaphore);
+    if (w) {
+        std::lock_guard<std::mutex> lk(waitMutex());
+        w->kind = WaitKind::Semaphore;
+        w->count = (long)(int32_t)ctx.r4.u32;
+        w->maxCount = (long)(int32_t)ctx.r5.u32;
+        if (w->maxCount <= 0) w->maxCount = 1;
+        w->signaled = w->count > 0;
+        w->autoReset = false; // consumo decrementa (tratado no consume)
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_KeReleaseSemaphore(PPCContext& ctx, uint8_t* base) {
+    // (Semaphore, PriorityIncrement, Adjustment, Wait) — Wait é dica do
+    // chamador ("vou esperar em seguida"), sem efeito próprio no NT
+    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Semaphore);
+    releaseSemaphore(w, (long)(int32_t)ctx.r5.u32);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_KeInitializeTimerEx(PPCContext& ctx, uint8_t* base) {
+    // (Timer, Type) — 0 = NotificationTimer (manual-reset),
+    // 1 = SynchronizationTimer (auto-reset)
+    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Timer);
+    if (w) {
+        std::lock_guard<std::mutex> lk(waitMutex());
+        w->kind = WaitKind::Timer;
+        w->autoReset = ctx.r4.u64 == 1;
+        w->signaled = false;
+        w->dueAbs100ns = 0;
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_KeSetTimer(PPCContext& ctx, uint8_t* base) {
+    // (Timer, DueTime [valor 64-bit, 100ns; <0 = relativo], Dpc)
+    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Timer);
+    const bool wasPending = setTimerDue(w, (int64_t)ctx.r4.u64);
+    if (ctx.r5.u64 != 0) {
+        static Throttle t;
+        if (t.shouldLog(4, 64)) {
+            RLOG("KeSetTimer(dpc=0x%08X) — DPC não despachado (o vencimento "
+                 "sinaliza o timer p/ KeWait: semântica real do objeto)",
+                 (unsigned)ctx.r5.u32);
+        }
+    }
+    ctx.r3.u32 = wasPending ? 1 : 0;
+}
+
+void real_KeCancelTimer(PPCContext& ctx, uint8_t* base) {
+    // (Timer) — retorna BOOL "estava pendente"
+    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Timer);
+    ctx.r3.u32 = cancelTimer(w) ? 1 : 0;
+}
+
 void real_KeWaitForSingleObject(PPCContext& ctx, uint8_t* base) {
     // (Object, Reason, Mode, Alertable, PLARGE_INTEGER Timeout)
     const uint64_t obj = ctx.r3.u64;

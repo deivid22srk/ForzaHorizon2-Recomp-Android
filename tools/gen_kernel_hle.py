@@ -42,6 +42,8 @@ REAL = {
     'KeDelayExecutionThread',
     'KeGetCurrentProcessType', 'KeSetCurrentProcessType',
     'KeInitializeMutant', 'KeReleaseMutant',
+    'KeInitializeSemaphore', 'KeReleaseSemaphore',
+    'KeInitializeTimerEx', 'KeSetTimer', 'KeCancelTimer',
     'KeQueryPerformanceFrequency', 'KeQuerySystemTime',
     'KeResetEvent', 'KeResumeThread', 'KeSetEvent',
     'KeTlsAlloc', 'KeTlsFree', 'KeTlsGetValue', 'KeTlsSetValue',

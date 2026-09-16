@@ -36,7 +36,7 @@ namespace fh2::kern {
 
 // Espécie de objeto sincronizável (chaveado por endereço guest do objeto
 // passado aos Ke*/ou pelo HANDLE devolvido pelos Nt*).
-enum class WaitKind : uint8_t { Event, Semaphore, Mutant };
+enum class WaitKind : uint8_t { Event, Semaphore, Mutant, Timer };
 
 struct Waitable {
     WaitKind kind = WaitKind::Event;
@@ -46,6 +46,10 @@ struct Waitable {
     long maxCount = 1;
     uint32_t ownerThread = 0;   // mutant: handle do dono
     bool abandoned = false;
+    // timer: vencimento ABSOLUTO (epoch 1601, 100 ns) — 0 = não agendado.
+    // A sinalização é LAZY (no waitForMultiple, sob o lock): sem thread de
+    // clock; o wait_until acorda no vencimento e o pred sinaliza.
+    uint64_t dueAbs100ns = 0;
 };
 
 struct GuestThread;
@@ -195,6 +199,11 @@ long setEvent(Waitable* w);
 long resetEvent(Waitable* w);
 /** Libera semáforo/mutant. */
 long releaseSemaphore(Waitable* w, long count);
+/** Agenda o timer (due < 0 = relativo, > 0 = absoluto epoch 1601, 100 ns).
+ *  Retorna true se já havia vencimento pendente. */
+bool setTimerDue(Waitable* w, int64_t due100ns);
+/** Cancela o timer (retorna true se havia vencimento pendente). */
+bool cancelTimer(Waitable* w);
 long releaseMutant(Waitable* w, bool& abandoned);
 /** Acorda TUDO (stop) — waits retornam WAIT_TIMEOUT imediatamente. */
 void wakeAll();

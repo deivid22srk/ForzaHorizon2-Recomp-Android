@@ -45,6 +45,31 @@ if [[ "$MAGIC" != "XEX2" ]]; then
 fi
 echo "OK: $XEX ($SIZE bytes, magic XEX2)"
 
+# XEXs SECUNDARIOS do disco (mesmo repositorio): XMediaFacade (video/XMV)
+# e SpeechFacade (voz/XMA) — recompilados junto com o titulo pelo
+# XenonRecomp multi-modulo; o runtime carrega e liga esses modulos em tempo
+# de boot (XexLoadImage do launcher do FH2).
+for MOD in XMediaFacade_default.xex SpeechFacade_default.xex; do
+    MOD_OUT="$OUT_DIR/$MOD"
+    echo "== Baixando $MOD =="
+    HTTP=$(curl -sS -L -H "Authorization: token $GH_PAT" \
+        -H "Accept: application/vnd.github.v3.raw" \
+        -o "$MOD_OUT" -w "%{http_code}" \
+        "https://api.github.com/repos/$REPO/contents/$MOD") || HTTP="curl-erro"
+    if [[ "$HTTP" != "200" ]]; then
+        echo "::warning::baixa de $MOD falhou (HTTP $HTTP) — o jogo segue sem ele (modulo ausente na runtime)"
+        rm -f "$MOD_OUT"
+        continue
+    fi
+    MAGIC=$(head -c 4 "$MOD_OUT")
+    if [[ "$MAGIC" != "XEX2" ]]; then
+        echo "::warning::$MOD com magic invalido — ignorado" >&2
+        rm -f "$MOD_OUT"
+        continue
+    fi
+    echo "OK: $MOD_OUT ($(stat -c%s "$MOD_OUT") bytes, magic XEX2)"
+done
+
 echo "== Descriptografia (XexTool, se compilado) =="
 XEXTOOL="tools/build/XexTool"
 if [[ -x "$XEXTOOL" ]]; then

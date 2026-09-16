@@ -226,54 +226,55 @@ inline uint32_t be32r(const uint8_t* p) {
            (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
 
-/** Parseia a tabela de exports (XEX_HEADER_EXPORTS_BY_NAME) do XEX
- *  decodificado. Formato real: o header opcional aponta para
- *  {u32 size, u32 offset} — offset é o RVA de um IMAGE_EXPORT_DIRECTORY PE
- *  cujas sub-tabelas (AddressOfFunctions/Names/NameOrdinals) são RVAs
- *  relativos ao PRÓPRIO diretório. Retorna ordinal → VA absoluto. */
-std::map<uint32_t, uint32_t> parseExportTable(const uint8_t* fileData,
-                                              size_t fileSize,
-                                              uint8_t* imageHost,
-                                              uint32_t imageBase,
+inline uint16_t be16r(const uint8_t* p) {
+    return (uint16_t)((uint16_t(p[0]) << 8) | uint16_t(p[1]));
+}
+
+/** Resolve as exports do módulo via PE EXPORT DIRECTORY do XEX decodificado
+ *  — a semântica REAL do XexGetProcedureAddress no console: o kernel caminha
+ *  o PE do módulo (DOS → NT → OptionalHeader.DataDirectory[0] →
+ *  IMAGE_EXPORT_DIRECTORY), NÃO um header opcional do XEX. O XMediaFacade/
+ *  SpeechFacade não têm XEX_HEADER_EXPORTS_BY_NAME (0x00E10402), mas TÊM a
+ *  tabela de exports PE padrão — é por isso que exports=0 estava errado.
+ *
+ *  RVAs do PE indexam o buffer decodificado (imagem flat, RVA == offset).
+ *  Retorna ordinal (Base + índice) → VA absoluto do módulo carregado. */
+std::map<uint32_t, uint32_t> parseExportTable(uint8_t* imageHost,
+                                              uint32_t imageSize,
                                               uint32_t moduleVa) {
     std::map<uint32_t, uint32_t> out;
-    // percorre os headers opcionais procurando 0x00E10402
-    if (fileSize < 0x18) return out;
-    const uint32_t headerCount = be32r(fileData + 0x14);
-    const uint8_t* opt = fileData + 0x18;
-    const uint8_t* dirInFile = nullptr;
-    for (uint32_t i = 0; i < headerCount; ++i) {
-        const size_t off = size_t(i) * 8;
-        if (off + 8 > fileSize - 0x18) break;
-        const uint32_t key = be32r(opt + off);
-        const uint32_t val = be32r(opt + off + 4);
-        if (key == 0x00E10402) {
-            if (size_t(val) + 8 <= fileSize) dirInFile = fileData + val;
-            break;
-        }
-    }
-    if (!dirInFile) return out; // módulo sem exports — vazio (real)
-    const uint32_t dirRva = be32r(dirInFile + 4);
-    if (dirRva == 0) return out;
-    // IMAGE_EXPORT_DIRECTORY na imagem decodificada (host ptr)
-    const uint8_t* d = imageHost + dirRva;
+    if (!imageHost || imageSize < 0x40 + 0x28) return out;
+    if (imageHost[0] != 'M' || imageHost[1] != 'Z') return out;
+    if (imageSize < 0x3C + 4) return out;
+    const uint32_t eLfanew = be32r(imageHost + 0x3C);
+    if (eLfanew == 0 || eLfanew + 0x18 + 0xE0 > imageSize) return out; // NT headers completos
+    const uint8_t* pe = imageHost + eLfanew;
+    if (!(pe[0] == 'P' && pe[1] == 'E' && pe[2] == 0 && pe[3] == 0)) return out;
+    const uint8_t* opt = pe + 0x18; // COFF header: 20 bytes
+    if (be16r(opt) != 0x10B) return out; // PE32 (Xbox 360)
+    // DataDirectory[0] = Export Directory (offset 0x60 no optional header)
+    const uint32_t ddRva = be32r(opt + 0x60);
+    const uint32_t ddSize = be32r(opt + 0x64);
+    if (ddRva == 0 || ddSize < 0x28) return out; // módulo sem exports (real)
+    if (ddRva + ddSize > imageSize) return out;
+    const uint8_t* d = imageHost + ddRva;
     const uint32_t numberOfFunctions = be32r(d + 0x14);
-    const uint32_t numberOfNames = be32r(d + 0x18);
-    const uint32_t addrFunctions = be32r(d + 0x1C);   // RVA rel. ao diretório
-    const uint32_t addrNameOrdinals = be32r(d + 0x24); // RVA rel. ao diretório
-    (void)numberOfNames;
-    if (numberOfFunctions == 0 || addrFunctions == 0) return out;
-    const uint8_t* funcTable = d + addrFunctions;
-    const uint8_t* ordTable = d + addrNameOrdinals;
-    // exports "por ordinal": ordinal N → funcTable[N] (RVA rel. ao módulo)
-    for (uint32_t ord = 0; ord < numberOfFunctions; ++ord) {
-        const uint32_t rva = be32r(funcTable + ord * 4);
+    const uint32_t addrFunctions = be32r(d + 0x1C);
+    const uint32_t ordinalBase = be32r(d + 0x10);
+    if (numberOfFunctions == 0 || numberOfFunctions > 0x10000) return out;
+    if (addrFunctions == 0 || addrFunctions + numberOfFunctions * 4 > imageSize)
+        return out;
+    const uint8_t* funcTable = imageHost + addrFunctions;
+    for (uint32_t i = 0; i < numberOfFunctions; ++i) {
+        const uint32_t rva = be32r(funcTable + i * 4);
         if (rva == 0) continue;
-        // no console: export VA = moduleBase + RVA (XexGetProcedureAddress
-        // devolve o endereço absoluto da função no espaço do título)
-        out[ord + 1] = moduleVa + rva;
+        if (rva >= ddRva && rva < ddRva + ddSize) continue; // forwarder (string)
+        if (rva >= imageSize) continue;
+        // export VA = base preferida do módulo + RVA (o console carrega o
+        // módulo na base preferida — ponteiros absolutos do código continuam
+        // válidos, e XexGetProcedureAddress devolve exatamente esse VA)
+        out[ordinalBase + i] = moduleVa + rva;
     }
-    (void)ordTable;
     return out;
 }
 
@@ -402,11 +403,11 @@ uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
     g_moduleRegionNext = placed + spanBytes;
     const uint32_t moduleVa = (uint32_t)placed;
 
-    // 6) exports reais (IMAGE_EXPORT_DIRECTORY — presente quando o XEX tem
-    //    XEX_HEADER_EXPORTS_BY_NAME; XMediaFacade/SpeechFacade NÃO têm —
-    //    exports vazias é o estado real desses módulos)
-    auto exports = parseExportTable(fileData.data(), fileData.size(),
-                                    image.data.get(), (uint32_t)image.base,
+    // 6) exports REAIS via PE EXPORT DIRECTORY do módulo decodificado — a
+    //    mesma estrutura que o kernel do console caminha em
+    //    XexGetProcedureAddress. O XMediaFacade/SpeechFacade exportam a API
+    //    XMedia/XMV por AQUI (DataDirectory[0] do PE), não por um header XEX.
+    auto exports = parseExportTable(image.data.get(), (uint32_t)image.size,
                                     moduleVa);
 
     // 7) registro no kernel como módulo SECUNDÁRIO (descarregado no relaunch)

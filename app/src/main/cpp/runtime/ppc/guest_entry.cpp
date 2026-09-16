@@ -86,15 +86,51 @@ uint64_t setupTls(uint8_t* base, const XexImageInfo& img,
 } // namespace
 
 uint64_t populateMagicTable(uint8_t* guestMemZero) {
-    PPCFunc** table = reinterpret_cast<PPCFunc**>(
-        guestMemZero + PPC_IMAGE_BASE + PPC_IMAGE_SIZE);
     uint64_t count = 0;
+    uint64_t extra[4] = {0, 0, 0, 0};
     for (PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) {
-        const uint64_t idx2 =
-            (uint64_t)((uint32_t)m->guest - (uint32_t)PPC_CODE_BASE) * 2ull;
-        table[idx2 / 8] = m->host;
+        const uint32_t addr = (uint32_t)m->guest;
+        // O slot decide a tabela: faixa do título na principal, faixas dos
+        // módulos secundários recompilados (XMediaFacade 0x88..., SpeechFacade
+        // 0x89...) nas extras — mesma convenção de fh2_funcSlot.
+        PPCFunc** slot = fh2_funcSlot(guestMemZero, addr);
+        if (slot == nullptr) continue; // fora de todas as faixas (impossível
+                                       // com o pipeline atual)
+#if defined(PPC_EXTRA0_CODE_BASE)
+        if (addr - (uint32_t)PPC_EXTRA0_CODE_BASE < (uint32_t)PPC_EXTRA0_CODE_SIZE) extra[0]++;
+#endif
+#if defined(PPC_EXTRA1_CODE_BASE)
+        if (addr - (uint32_t)PPC_EXTRA1_CODE_BASE < (uint32_t)PPC_EXTRA1_CODE_SIZE) extra[1]++;
+#endif
+#if defined(PPC_EXTRA2_CODE_BASE)
+        if (addr - (uint32_t)PPC_EXTRA2_CODE_BASE < (uint32_t)PPC_EXTRA2_CODE_SIZE) extra[2]++;
+#endif
+#if defined(PPC_EXTRA3_CODE_BASE)
+        if (addr - (uint32_t)PPC_EXTRA3_CODE_BASE < (uint32_t)PPC_EXTRA3_CODE_SIZE) extra[3]++;
+#endif
+        *slot = m->host;
         ++count;
     }
+#if defined(PPC_EXTRA0_CODE_BASE)
+    if (extra[0])
+        GLOG("tabela extra 0 (módulo secundário, VA 0x%08X): %llu funções",
+             (unsigned)PPC_EXTRA0_TABLE_VA, (unsigned long long)extra[0]);
+#endif
+#if defined(PPC_EXTRA1_CODE_BASE)
+    if (extra[1])
+        GLOG("tabela extra 1 (módulo secundário, VA 0x%08X): %llu funções",
+             (unsigned)PPC_EXTRA1_TABLE_VA, (unsigned long long)extra[1]);
+#endif
+#if defined(PPC_EXTRA2_CODE_BASE)
+    if (extra[2])
+        GLOG("tabela extra 2 (módulo secundário, VA 0x%08X): %llu funções",
+             (unsigned)PPC_EXTRA2_TABLE_VA, (unsigned long long)extra[2]);
+#endif
+#if defined(PPC_EXTRA3_CODE_BASE)
+    if (extra[3])
+        GLOG("tabela extra 3 (módulo secundário, VA 0x%08X): %llu funções",
+             (unsigned)PPC_EXTRA3_TABLE_VA, (unsigned long long)extra[3]);
+#endif
     GLOG("tabela mágica de funções populada: %llu entradas em 0x%08llX",
          (unsigned long long)count,
          (unsigned long long)(PPC_IMAGE_BASE + PPC_IMAGE_SIZE));

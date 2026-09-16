@@ -1,18 +1,15 @@
 // kernel_hle.cpp — despacho HLE dos imports de xboxkrnl.exe/xam.xex (FH2)
 //
-// GERADO por tools/gen_kernel_hle.py — 388 símbolos exigidos por
+// GERADO por tools/gen_kernel_hle.py — 413 símbolos exigidos por
 // ppc_func_mapping.cpp. Três caminhos:
-//   REAL  (105): delega para fh2::kern::real_* com semântica real
+//   REAL  (111): delega para fh2::kern::real_* com semântica real
 //         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
 //   FAIL  (26): retorna status de falha REAL do estado do sistema
-//   stub  (257): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+//   stub  (276): log-once + NTSTATUS 0 (semântica pendente — issue #16)
 // NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
 #include <android/log.h>
-
-#include <atomic>
-
 #include "ppc_config.h"
 #include "ppc_context.h"
 #include "runtime/ppc/kernel_real.h"
@@ -114,20 +111,12 @@ void __imp__ExTerminateThread(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("ExTerminateThread", ctx);
 }
 
-// FscSetCacheElementCount: semântica REAL (D31): o kernel do 360 guarda o
-// tamanho do cache de elementos do FS do título e devolve ERROR_SUCCESS.
-// Armazenamos o valor como estado real do FS (observável no diagnóstico do
-// runtime — o cache de arquivos do FsProvider usa linhas de 64 KB; o count
-// do 360 é por elemento de diretório, dimensão distinta, mas o estado fica
-// registrado como no console).
+// FscSetCacheElementCount: semântica real pendente (issue #16)
 void __imp__FscSetCacheElementCount(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("FscSetCacheElementCount", ctx);
-    static std::atomic<uint32_t> s_cacheElements{0};
-    s_cacheElements.store(ctx.r3.u32, std::memory_order_relaxed);
-    HLOG("FscSetCacheElementCount(%u) — cache de elementos do título "
-         "dimensionado", ctx.r3.u32);
-    ctx.r3.u32 = 0; // ERROR_SUCCESS
+    FH2_HLE_ONCE(FscSetCacheElementCount, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
     fh2::kern::traceReturn("FscSetCacheElementCount", ctx);
 }
 
@@ -260,11 +249,27 @@ void __imp__KeBugCheckEx(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("KeBugCheckEx", ctx);
 }
 
+// KeCancelTimer: semântica REAL (kernel_real.cpp)
+void __imp__KeCancelTimer(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("KeCancelTimer", ctx);
+    fh2::kern::real_KeCancelTimer(ctx, base);
+    fh2::kern::traceReturn("KeCancelTimer", ctx);
+}
+
 // KeDelayExecutionThread: semântica REAL (kernel_real.cpp)
 void __imp__KeDelayExecutionThread(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("KeDelayExecutionThread", ctx);
     fh2::kern::real_KeDelayExecutionThread(ctx, base);
     fh2::kern::traceReturn("KeDelayExecutionThread", ctx);
+}
+
+// KeEnableFpuExceptions: semântica real pendente (issue #16)
+void __imp__KeEnableFpuExceptions(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("KeEnableFpuExceptions", ctx);
+    FH2_HLE_ONCE(KeEnableFpuExceptions, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("KeEnableFpuExceptions", ctx);
 }
 
 // KeEnterCriticalRegion: semântica real pendente (issue #16)
@@ -297,6 +302,20 @@ void __imp__KeInitializeMutant(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("KeInitializeMutant", ctx);
     fh2::kern::real_KeInitializeMutant(ctx, base);
     fh2::kern::traceReturn("KeInitializeMutant", ctx);
+}
+
+// KeInitializeSemaphore: semântica REAL (kernel_real.cpp)
+void __imp__KeInitializeSemaphore(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("KeInitializeSemaphore", ctx);
+    fh2::kern::real_KeInitializeSemaphore(ctx, base);
+    fh2::kern::traceReturn("KeInitializeSemaphore", ctx);
+}
+
+// KeInitializeTimerEx: semântica REAL (kernel_real.cpp)
+void __imp__KeInitializeTimerEx(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("KeInitializeTimerEx", ctx);
+    fh2::kern::real_KeInitializeTimerEx(ctx, base);
+    fh2::kern::traceReturn("KeInitializeTimerEx", ctx);
 }
 
 // KeInsertQueueDpc: semântica real pendente (issue #16)
@@ -354,6 +373,13 @@ void __imp__KeReleaseMutant(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("KeReleaseMutant", ctx);
     fh2::kern::real_KeReleaseMutant(ctx, base);
     fh2::kern::traceReturn("KeReleaseMutant", ctx);
+}
+
+// KeReleaseSemaphore: semântica REAL (kernel_real.cpp)
+void __imp__KeReleaseSemaphore(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("KeReleaseSemaphore", ctx);
+    fh2::kern::real_KeReleaseSemaphore(ctx, base);
+    fh2::kern::traceReturn("KeReleaseSemaphore", ctx);
 }
 
 // KeReleaseSpinLockFromRaisedIrql: semântica real pendente (issue #16)
@@ -432,6 +458,13 @@ void __imp__KeSetEvent(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("KeSetEvent", ctx);
     fh2::kern::real_KeSetEvent(ctx, base);
     fh2::kern::traceReturn("KeSetEvent", ctx);
+}
+
+// KeSetTimer: semântica REAL (kernel_real.cpp)
+void __imp__KeSetTimer(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("KeSetTimer", ctx);
+    fh2::kern::real_KeSetTimer(ctx, base);
+    fh2::kern::traceReturn("KeSetTimer", ctx);
 }
 
 // KeTlsAlloc: semântica REAL (kernel_real.cpp)
@@ -1225,6 +1258,15 @@ void __imp__NtOpenFile(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtOpenFile", ctx);
 }
 
+// NtOpenSymbolicLinkObject: semântica real pendente (issue #16)
+void __imp__NtOpenSymbolicLinkObject(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("NtOpenSymbolicLinkObject", ctx);
+    FH2_HLE_ONCE(NtOpenSymbolicLinkObject, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("NtOpenSymbolicLinkObject", ctx);
+}
+
 // NtQueryDirectoryFile: falha REAL — FS pendente
 void __imp__NtQueryDirectoryFile(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -1246,6 +1288,15 @@ void __imp__NtQueryInformationFile(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("NtQueryInformationFile", ctx);
     fh2::kern::real_NtQueryInformationFile(ctx, base);
     fh2::kern::traceReturn("NtQueryInformationFile", ctx);
+}
+
+// NtQuerySymbolicLinkObject: semântica real pendente (issue #16)
+void __imp__NtQuerySymbolicLinkObject(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("NtQuerySymbolicLinkObject", ctx);
+    FH2_HLE_ONCE(NtQuerySymbolicLinkObject, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("NtQuerySymbolicLinkObject", ctx);
 }
 
 // NtQueryVirtualMemory: semântica REAL (kernel_real.cpp)
@@ -1325,6 +1376,13 @@ void __imp__NtSignalAndWaitForSingleObjectEx(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("NtSignalAndWaitForSingleObjectEx", ctx);
     fh2::kern::real_NtSignalAndWaitForSingleObjectEx(ctx, base);
     fh2::kern::traceReturn("NtSignalAndWaitForSingleObjectEx", ctx);
+}
+
+// NtSuspendThread: semântica REAL (kernel_real.cpp)
+void __imp__NtSuspendThread(PPCContext& ctx, uint8_t* base) {
+    fh2::kern::traceCall("NtSuspendThread", ctx);
+    fh2::kern::real_NtSuspendThread(ctx, base);
+    fh2::kern::traceReturn("NtSuspendThread", ctx);
 }
 
 // NtWaitForMultipleObjectsEx: semântica REAL (kernel_real.cpp)
@@ -1471,6 +1529,24 @@ void __imp__RtlCompareStringN(PPCContext& ctx, uint8_t* base) {
     FH2_HLE_ONCE(RtlCompareStringN, "semântica real pendente (issue #16)");
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("RtlCompareStringN", ctx);
+}
+
+// RtlCopyString: semântica real pendente (issue #16)
+void __imp__RtlCopyString(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("RtlCopyString", ctx);
+    FH2_HLE_ONCE(RtlCopyString, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("RtlCopyString", ctx);
+}
+
+// RtlDowncaseUnicodeChar: semântica real pendente (issue #16)
+void __imp__RtlDowncaseUnicodeChar(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("RtlDowncaseUnicodeChar", ctx);
+    FH2_HLE_ONCE(RtlDowncaseUnicodeChar, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("RtlDowncaseUnicodeChar", ctx);
 }
 
 // RtlEnterCriticalSection: semântica REAL (kernel_real.cpp)
@@ -1819,6 +1895,15 @@ void __imp__VdSwap(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("VdSwap", ctx);
 }
 
+// XAudioCaptureRenderDriverFrame: semântica real pendente (issue #16)
+void __imp__XAudioCaptureRenderDriverFrame(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XAudioCaptureRenderDriverFrame", ctx);
+    FH2_HLE_ONCE(XAudioCaptureRenderDriverFrame, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XAudioCaptureRenderDriverFrame", ctx);
+}
+
 // XAudioEnableDucker: semântica real pendente (issue #16)
 void __imp__XAudioEnableDucker(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -1873,6 +1958,15 @@ void __imp__XAudioGetDuckerThreshold(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XAudioGetDuckerThreshold", ctx);
 }
 
+// XAudioGetRenderDriverTic: semântica real pendente (issue #16)
+void __imp__XAudioGetRenderDriverTic(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XAudioGetRenderDriverTic", ctx);
+    FH2_HLE_ONCE(XAudioGetRenderDriverTic, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XAudioGetRenderDriverTic", ctx);
+}
+
 // XAudioGetSpeakerConfig: semântica real pendente (issue #16)
 void __imp__XAudioGetSpeakerConfig(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -1900,6 +1994,15 @@ void __imp__XAudioRegisterRenderDriverClient(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XAudioRegisterRenderDriverClient", ctx);
 }
 
+// XAudioRegisterRenderDriverMECClient: semântica real pendente (issue #16)
+void __imp__XAudioRegisterRenderDriverMECClient(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XAudioRegisterRenderDriverMECClient", ctx);
+    FH2_HLE_ONCE(XAudioRegisterRenderDriverMECClient, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XAudioRegisterRenderDriverMECClient", ctx);
+}
+
 // XAudioSubmitRenderDriverFrame: áudio do guest — issue #18
 void __imp__XAudioSubmitRenderDriverFrame(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -1916,6 +2019,15 @@ void __imp__XAudioUnregisterRenderDriverClient(PPCContext& ctx, uint8_t* base) {
     FH2_HLE_ONCE(XAudioUnregisterRenderDriverClient, "semântica real pendente (issue #16)");
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XAudioUnregisterRenderDriverClient", ctx);
+}
+
+// XAudioUnregisterRenderDriverMECClient: semântica real pendente (issue #16)
+void __imp__XAudioUnregisterRenderDriverMECClient(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XAudioUnregisterRenderDriverMECClient", ctx);
+    FH2_HLE_ONCE(XAudioUnregisterRenderDriverMECClient, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XAudioUnregisterRenderDriverMECClient", ctx);
 }
 
 // XCustomGetCurrentGamercard: semântica real pendente (issue #16)
@@ -2132,6 +2244,15 @@ void __imp__XamContentClose(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamContentClose", ctx);
 }
 
+// XamContentCreateDeviceEnumerator: semântica real pendente (issue #16)
+void __imp__XamContentCreateDeviceEnumerator(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamContentCreateDeviceEnumerator", ctx);
+    FH2_HLE_ONCE(XamContentCreateDeviceEnumerator, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamContentCreateDeviceEnumerator", ctx);
+}
+
 // XamContentCreateEnumerator: semântica real pendente (issue #16)
 void __imp__XamContentCreateEnumerator(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -2150,6 +2271,15 @@ void __imp__XamContentCreateEx(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamContentCreateEx", ctx);
 }
 
+// XamContentCreateInternal: semântica real pendente (issue #16)
+void __imp__XamContentCreateInternal(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamContentCreateInternal", ctx);
+    FH2_HLE_ONCE(XamContentCreateInternal, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamContentCreateInternal", ctx);
+}
+
 // XamContentDelete: semântica real pendente (issue #16)
 void __imp__XamContentDelete(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -2157,6 +2287,15 @@ void __imp__XamContentDelete(PPCContext& ctx, uint8_t* base) {
     FH2_HLE_ONCE(XamContentDelete, "semântica real pendente (issue #16)");
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XamContentDelete", ctx);
+}
+
+// XamContentDeleteInternal: semântica real pendente (issue #16)
+void __imp__XamContentDeleteInternal(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamContentDeleteInternal", ctx);
+    FH2_HLE_ONCE(XamContentDeleteInternal, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamContentDeleteInternal", ctx);
 }
 
 // XamContentFlush: semântica real pendente (issue #16)
@@ -2195,25 +2334,12 @@ void __imp__XamContentGetDeviceState(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamContentGetDeviceState", ctx);
 }
 
-// XamContentGetLicenseMask: semântica REAL (D31): devolve a máscara de
-// licenças de conteúdo desbloqueado do perfil. Disco sem DLC = 0 licenças
-// (estado real p/ o título). Caminho síncrono do FH2 (r4 = overlapped nulo):
-// escreve a máscara e devolve ERROR_SUCCESS. Com overlapped, o console faria
-// completa assíncrona — sem fila de APC modelada, devolvemos erro EXPLÍCITO
-// (nunca sucesso falso).
+// XamContentGetLicenseMask: semântica real pendente (issue #16)
 void __imp__XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("XamContentGetLicenseMask", ctx);
-    const uint64_t pMask = ctx.r3.u64;
-    if (ctx.r4.u64 != 0) {
-        HLOG("XamContentGetLicenseMask async (overlapped) = ERROR_NOT_SUPPORTED");
-        ctx.r3.u32 = 50; // ERROR_NOT_SUPPORTED (Win32)
-        return;
-    }
-    if (fh2::kern::guestPtrValid(pMask, 4)) {
-        fh2::kern::writeGuestU32(pMask, 0); // 0 licenças: disco, sem DLC
-    }
-    ctx.r3.u32 = 0; // ERROR_SUCCESS
+    FH2_HLE_ONCE(XamContentGetLicenseMask, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XamContentGetLicenseMask", ctx);
 }
 
@@ -2539,6 +2665,15 @@ void __imp__XamNuiCameraTiltSetCallback(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamNuiCameraTiltSetCallback", ctx);
 }
 
+// XamNuiGetDeviceSerialNumber: semântica real pendente (issue #16)
+void __imp__XamNuiGetDeviceSerialNumber(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamNuiGetDeviceSerialNumber", ctx);
+    FH2_HLE_ONCE(XamNuiGetDeviceSerialNumber, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamNuiGetDeviceSerialNumber", ctx);
+}
+
 // XamNuiGetDeviceStatus: semântica real pendente (issue #16)
 void __imp__XamNuiGetDeviceStatus(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -2651,14 +2786,7 @@ void __imp__XamShowDeviceSelectorUI(PPCContext& ctx, uint8_t* base) {
 void __imp__XamShowDirtyDiscErrorUI(PPCContext& ctx, uint8_t* base) {
     (void)base;
     fh2::kern::traceCall("XamShowDirtyDiscErrorUI", ctx);
-    static bool _logged_dd = false;
-    if (!_logged_dd) {
-        _logged_dd = true;
-        HLOG("HLE stub: XamShowDirtyDiscErrorUI — chamado pelo guest em "
-             "lr=0x%08X (r3=0x%08X r4=0x%08X r5=0x%08X) [issue #16]",
-             (uint32_t)ctx.lr, (uint32_t)ctx.r3.u32, (uint32_t)ctx.r4.u32,
-             (uint32_t)ctx.r5.u32);
-    }
+    FH2_HLE_ONCE(XamShowDirtyDiscErrorUI, "semântica real pendente (issue #16)");
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XamShowDirtyDiscErrorUI", ctx);
 }
@@ -2861,6 +2989,15 @@ void __imp__XamUserGetAgeGroup(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamUserGetAgeGroup", ctx);
 }
 
+// XamUserGetCachedUserFlags: semântica real pendente (issue #16)
+void __imp__XamUserGetCachedUserFlags(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamUserGetCachedUserFlags", ctx);
+    FH2_HLE_ONCE(XamUserGetCachedUserFlags, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamUserGetCachedUserFlags", ctx);
+}
+
 // XamUserGetDeviceContext: semântica real pendente (issue #16)
 void __imp__XamUserGetDeviceContext(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -2985,6 +3122,33 @@ void __imp__XamVoiceCreate(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XamVoiceCreate", ctx);
 }
 
+// XamVoiceGetMicArrayAudioEx: semântica real pendente (issue #16)
+void __imp__XamVoiceGetMicArrayAudioEx(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamVoiceGetMicArrayAudioEx", ctx);
+    FH2_HLE_ONCE(XamVoiceGetMicArrayAudioEx, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamVoiceGetMicArrayAudioEx", ctx);
+}
+
+// XamVoiceGetMicArrayStatus: semântica real pendente (issue #16)
+void __imp__XamVoiceGetMicArrayStatus(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamVoiceGetMicArrayStatus", ctx);
+    FH2_HLE_ONCE(XamVoiceGetMicArrayStatus, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamVoiceGetMicArrayStatus", ctx);
+}
+
+// XamVoiceGetMicArrayUnderrunStatus: semântica real pendente (issue #16)
+void __imp__XamVoiceGetMicArrayUnderrunStatus(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XamVoiceGetMicArrayUnderrunStatus", ctx);
+    FH2_HLE_ONCE(XamVoiceGetMicArrayUnderrunStatus, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XamVoiceGetMicArrayUnderrunStatus", ctx);
+}
+
 // XamVoiceHeadsetPresent: semântica real pendente (issue #16)
 void __imp__XamVoiceHeadsetPresent(PPCContext& ctx, uint8_t* base) {
     (void)base;
@@ -3073,6 +3237,15 @@ void __imp__XampXAuthIsLocalSocketAllowed(PPCContext& ctx, uint8_t* base) {
     FH2_HLE_ONCE(XampXAuthIsLocalSocketAllowed, "semântica real pendente (issue #16)");
     ctx.r3.u32 = 0;
     fh2::kern::traceReturn("XampXAuthIsLocalSocketAllowed", ctx);
+}
+
+// XeCryptRandom: semântica real pendente (issue #16)
+void __imp__XeCryptRandom(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("XeCryptRandom", ctx);
+    FH2_HLE_ONCE(XeCryptRandom, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("XeCryptRandom", ctx);
 }
 
 // XeCryptSha: semântica real pendente (issue #16)
@@ -3302,6 +3475,15 @@ void __imp___snprintf(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceCall("_snprintf", ctx);
     fh2::kern::real__snprintf(ctx, base);
     fh2::kern::traceReturn("_snprintf", ctx);
+}
+
+// _snwprintf: semântica real pendente (issue #16)
+void __imp___snwprintf(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    fh2::kern::traceCall("_snwprintf", ctx);
+    FH2_HLE_ONCE(_snwprintf, "semântica real pendente (issue #16)");
+    ctx.r3.u32 = 0;
+    fh2::kern::traceReturn("_snwprintf", ctx);
 }
 
 // _vsnprintf: semântica REAL (kernel_real.cpp)
