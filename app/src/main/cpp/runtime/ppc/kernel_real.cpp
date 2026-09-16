@@ -34,6 +34,8 @@
 
 #include "runtime/input/input_state.h"
 #include "runtime/gfx/graphics_backend.h"
+#include "runtime/gpu/cmd_processor.h"
+#include "runtime/ppc/guest_entry.h"
 #include "runtime/ppc/kernel_state.h"
 
 #define RLOG(...) __android_log_print(ANDROID_LOG_INFO, "FH2/KRN", __VA_ARGS__)
@@ -2483,18 +2485,99 @@ VdGraphicsState& vdGraphics() {
 }
 
 void real_VdSwap(PPCContext& ctx, uint8_t* base) {
-    (void)base;
+    // Semântica REAL do console (mesma do Xenia — xboxkrnl_video.cc VdSwap):
+    //   VdSwap(buffer_ptr, fetch_ptr, unk2, unk3, unk4, frontbuffer_ptr,
+    //          texture_format_ptr, color_space_ptr, width_ptr, height_ptr)
+    // O D3D9 do título reserva 64 dwords no ring primário e passa:
+    //   • fetch_ptr: texture fetch do front buffer (6 dwords, xe_gpu_texture_fetch_t)
+    //   • frontbuffer_ptr/format/width/height: ponteiros p/ valores reais
+    // O kernel TRADUZ o VA do fetch para PA, grava no buffer_ptr um pacote
+    // type-0 (fetch → SHADER_CONSTANT_FETCH_00_0) + PM4_XE_SWAP + NOPs; o CP
+    // (cmd_processor.cpp) processa o ring e apresenta o frame REAL.
     auto& vd = vdGraphics();
     vd.swapCount += 1;
-    if (auto* backend = fh2::gfx::activeBackend()) {
-        // Flip REAL: bloqueia até o frame estar na tela (vblank FIFO).
-        backend->present();
+
+    const uint32_t bufferPtr = uint32_t(ctx.r3.u64);
+    const uint32_t fetchPtr = uint32_t(ctx.r4.u64);
+    // Ordem REAL dos parâmetros (xenia xboxkrnl_video.cc VdSwap_entry):
+    //   r3 buffer_ptr, r4 fetch_ptr, r5 unk2, r6 unk3, r7 unk4,
+    //   r8 frontbuffer_ptr, r9 texture_format_ptr, r10 color_space_ptr,
+    //   r11 width, r12 height
+    const uint32_t frontbufferPtr = uint32_t(ctx.r8.u64);
+    const uint32_t fmtPtr = uint32_t(ctx.r9.u64);
+    const uint32_t colorSpacePtr = uint32_t(ctx.r10.u64);
+    const uint32_t widthPtr = uint32_t(ctx.r11.u64);
+    const uint32_t heightPtr = uint32_t(ctx.r12.u64);
+    (void)colorSpacePtr; // RGB (0) no FH2 — verificado pelo guest
+
+    if (!validGuest(bufferPtr, 64 * 4) || !validGuest(fetchPtr, 24) ||
+        !validGuest(frontbufferPtr, 4) || !validGuest(fmtPtr, 4) ||
+        !validGuest(widthPtr, 4) || !validGuest(heightPtr, 4)) {
+        RLOG("VdSwap: argumentos inválidos (buffer=0x%08X fetch=0x%08X) — "
+             "swap descartado",
+             bufferPtr, fetchPtr);
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
     }
+
+    // Texture fetch REAL (6 dwords BE do guest).
+    uint32_t fetch[6];
+    for (int i = 0; i < 6; ++i) fetch[i] = g32(base, fetchPtr + i * 4);
+    // dword_1: format : 6 | endian : 2 | request : 2 | stacked : 1 | ncp : 1
+    //          | base_address : 20 (VA >> 12)
+    const uint32_t frontBufferVa = (fetch[1] >> 12) << 12;
+    // Tradução VA→PA REAL do modelo de memória do console.
+    uint32_t frontBufferPa;
+    if (frontBufferVa >= 0x80000000u && frontBufferVa < 0xA0000000u) {
+        frontBufferPa = frontBufferVa - 0x80000000u;
+    } else if (frontBufferVa >= 0xA0000000u && frontBufferVa < 0xC0000000u) {
+        frontBufferPa = frontBufferVa - 0xA0000000u;
+    } else {
+        RLOG("VdSwap: front buffer VA inválido 0x%08X — swap descartado",
+             frontBufferVa);
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    fetch[1] = (fetch[1] & 0xFFFu) | ((frontBufferPa >> 12) << 12);
+
+    // Verificação REAL: o frontbuffer_ptr do D3D deve apontar o mesmo VA.
+    const uint32_t d3dFrontVa = g32(base, frontbufferPtr);
+    if (d3dFrontVa != frontBufferVa) {
+        static Throttle tMismatch;
+        if (tMismatch.shouldLog(4, 1024)) {
+            RLOG("VdSwap: front buffer do fetch (0x%08X) != do D3D (0x%08X) — "
+                 "usando o do fetch", frontBufferVa, d3dFrontVa);
+        }
+    }
+
+    // Enfileira os 64 dwords no ring (BE — memória guest):
+    //   type-0 (0x4800 FETCH_00_0, 6 dwords) + type-3 XE_SWAP (4) + NOPs
+    const uint32_t type0 = (0u << 30) | ((6u - 1u) << 16) | 0x4800;
+    const uint32_t type3Swap =
+        (3u << 30) | ((4u - 1u) << 16) | (0x64 << 8); // PM4_XE_SWAP
+    const uint32_t type2Nop = 2u << 30;
+    uint32_t off = 0;
+    w32(base, bufferPtr + off * 4, type0);
+    ++off;
+    for (int i = 0; i < 6; ++i, ++off) w32(base, bufferPtr + off * 4, fetch[i]);
+    w32(base, bufferPtr + off * 4, type3Swap);
+    ++off;
+    w32(base, bufferPtr + off * 4, 0x53574150u); // fourcc "SWAP"
+    ++off;
+    w32(base, bufferPtr + off * 4, frontBufferPa);
+    ++off;
+    w32(base, bufferPtr + off * 4, g32(base, widthPtr));
+    ++off;
+    w32(base, bufferPtr + off * 4, g32(base, heightPtr));
+    ++off;
+    for (; off < 64; ++off) w32(base, bufferPtr + off * 4, type2Nop);
+
     static Throttle t1;
     if (t1.shouldLog(8, 512)) {
-        RLOG("VdSwap: flip #%llu (%s)", (unsigned long long)vd.swapCount,
-             fh2::gfx::activeBackend() ? fh2::gfx::activeBackend()->name()
-                                        : "sem backend");
+        RLOG("VdSwap: pacote enfileirado #%llu (front PA=0x%08X %ux%u fmt=%u) "
+             "— CP apresenta",
+             (unsigned long long)vd.swapCount, frontBufferPa,
+             g32(base, widthPtr), g32(base, heightPtr), g32(base, fmtPtr));
     }
     ctx.r3.u32 = STATUS_SUCCESS;
 }
@@ -2571,8 +2654,13 @@ void real_VdInitializeRingBuffer(PPCContext& ctx, uint8_t* base) {
     auto& vd = vdGraphics();
     vd.ringBufferBase = uint32_t(ctx.r3.u64);
     vd.ringBufferArg2 = uint32_t(ctx.r4.u64);
-    RLOG("VdInitializeRingBuffer(base=0x%08X arg2=0x%08X)", vd.ringBufferBase,
-         vd.ringBufferArg2);
+    // r3 = PA físico (MmGetPhysicalAddress), r4 = log2 do tamanho em
+    // QUADWORDS (semântica real do console — xenia xboxkrnl_video.cc).
+    RLOG("VdInitializeRingBuffer(base=0x%08X size_log2=0x%08X → %u bytes)",
+         vd.ringBufferBase, vd.ringBufferArg2,
+         vd.ringBufferArg2 < 24 ? (1u << (vd.ringBufferArg2 + 3)) : 0u);
+    fh2::gpu::CommandProcessor::instance().onRingBufferInitialized(
+        vd.ringBufferBase, vd.ringBufferArg2);
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
@@ -2581,8 +2669,12 @@ void real_VdEnableRingBufferRPtrWriteBack(PPCContext& ctx, uint8_t* base) {
     auto& vd = vdGraphics();
     vd.ringRptrAddr = uint32_t(ctx.r3.u64);
     vd.ringRptrArg2 = uint32_t(ctx.r4.u64);
-    RLOG("VdEnableRingBufferRPtrWriteBack(ptr=0x%08X arg2=0x%08X)",
+    // r3 = PA do write-back, r4 = log2 do bloco (dwords lidos entre updates;
+    // 6 no console — xenia command_processor EnableReadPointerWriteBack).
+    RLOG("VdEnableRingBufferRPtrWriteBack(ptr=0x%08X block_log2=0x%08X)",
          vd.ringRptrAddr, vd.ringRptrArg2);
+    fh2::gpu::CommandProcessor::instance().onRingPointerWriteBack(
+        vd.ringRptrAddr, vd.ringRptrArg2);
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
@@ -2591,13 +2683,21 @@ void real_VdSetGraphicsInterruptCallback(PPCContext& ctx, uint8_t* base) {
     auto& vd = vdGraphics();
     vd.graphicsInterruptCb = uint32_t(ctx.r3.u64);
     vd.graphicsInterruptArg = uint32_t(ctx.r4.u64);
-    // O disparo do callback exige thread de interrupção com TEB/stack
-    // próprios (o interrupt do console roda em contexto dedicado) — marco
-    // do processador de comandos Xenos (issue #17). O endereço fica
-    // registrado para essa implementação.
-    RLOG("VdSetGraphicsInterruptCallback(cb=0x%08X arg=0x%08X) — registro "
-         "real; disparo na issue #17",
+    // Registro REAL + thread de interrupção dedicada (vblank 60 Hz, TEB/
+    // stack próprios — como no console). O D3D do título depende disso p/
+    // fences/vsync/swap completion.
+    RLOG("VdSetGraphicsInterruptCallback(cb=0x%08X arg=0x%08X) — thread de "
+         "interrupção ativa",
          vd.graphicsInterruptCb, vd.graphicsInterruptArg);
+    fh2::ppc::setGraphicsInterrupt(vd.graphicsInterruptCb,
+                                   vd.graphicsInterruptArg);
+    static std::thread s_interruptThread;
+    static bool s_started = false;
+    if (!s_started) {
+        s_started = true;
+        s_interruptThread = std::thread(fh2::ppc::graphicsInterruptLoop);
+        s_interruptThread.detach();
+    }
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 

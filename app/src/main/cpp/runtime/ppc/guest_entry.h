@@ -39,4 +39,14 @@ void guestThreadBody(kern::GuestThread& t, uint8_t* guestMemZero,
 void runGuestMain(uint32_t entryAddr, uint8_t* guestMemZero,
                   const XexImageInfo& img, std::atomic<bool>& stopRequested);
 
+/** Thread de interrupção gráfica do GPU (vblank ~60 Hz): chama o callback
+ *  guest registrado por VdSetGraphicsInterruptCallback numa thread com
+ *  stack/TEB próprios — como o interrupt thread do console. Bloqueia até
+ *  stopRequested(). Os endereços são re-lidos a cada vblank (re-registro). */
+void graphicsInterruptLoop();
+
+/** Registra/atualiza o callback de interrupção gráfica (chamado pelo kernel
+ *  em VdSetGraphicsInterruptCallback). */
+void setGraphicsInterrupt(uint32_t callbackAddr, uint32_t callbackArg);
+
 } // namespace fh2::ppc

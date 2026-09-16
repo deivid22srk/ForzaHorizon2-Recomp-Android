@@ -27,6 +27,8 @@ public:
     bool onSurfaceAvailable(ANativeWindow* window, int width, int height) override;
     void onSurfaceLost() override;
     bool present() override;
+    bool presentFrontBuffer(const void* data, uint32_t rowBytes, uint32_t w,
+                            uint32_t h, uint32_t xenosFormat) override;
 
     void setResolutionScale(int pct) override { resolutionScale_ = pct; }
     void setFpsTarget(int fps) override { fpsTarget_ = fps; }
@@ -55,6 +57,14 @@ private:
     EGLSurface surface_ = EGL_NO_SURFACE;
     EGLConfig config_ = nullptr;
     EGLint numConfigs_ = 0;
+
+    // Front buffer REAL do título (upload + quad — pixels do jogo, p/ swap).
+    unsigned fbTex_ = 0;                  // GLuint
+    unsigned fbProgram_ = 0;              // GLuint
+    int fbWidth_ = 0;
+    int fbHeight_ = 0;
+    bool fbShaderReady_ = false;
+    bool ensureFrontBufferShader();
 };
 
 } // namespace fh2::gles3

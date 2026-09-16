@@ -19,6 +19,7 @@ add_library(fh2recomp SHARED
     runtime/gfx/graphics_backend.cpp
     runtime/gfx/gles3_backend.cpp
     runtime/gfx/vulkan_backend.cpp
+    runtime/gpu/cmd_processor.cpp
     runtime/audio/audio_output.cpp
     runtime/input/input_state.cpp
     runtime/fs/fs_provider.cpp

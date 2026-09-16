@@ -48,6 +48,8 @@ public:
     bool onSurfaceAvailable(ANativeWindow* window, int width, int height) override;
     void onSurfaceLost() override;
     bool present() override;
+    bool presentFrontBuffer(const void* data, uint32_t rowBytes, uint32_t w,
+                            uint32_t h, uint32_t xenosFormat) override;
 
     void setResolutionScale(int pct) override { resolutionScale_ = pct; }
     void setFpsTarget(int fps) override { fpsTarget_ = fps; }
@@ -71,6 +73,14 @@ private:
     // Recria um fence do slot como SIGNALED (recuperação de erro de submit —
     // sem isso o próximo vkWaitForFences do slot bloquearia para sempre).
     void recreateFenceSignaled(uint32_t slot);
+
+    // Núcleo do present: clear preto (front == nullptr) OU blit do front
+    // buffer REAL do título (upload via staging + vkCmdBlitImage).
+    bool presentInternal(const void* data, uint32_t rowBytes, uint32_t w,
+                         uint32_t h, uint32_t xenosFormat);
+    // Garante staging buffer + VkImage do front buffer com a capacidade dada.
+    bool ensureFrontBufferResources(uint32_t rowBytes, uint32_t w, uint32_t h);
+    void destroyFrontBufferResources();
 
     // padrão de teste REMOVIDO — o backend nunca inventa conteúdo: enquanto
     // o Xenos não produzir frames reais a surface é preta
@@ -114,6 +124,17 @@ private:
     uint64_t frameCounter_ = 0;           // frames apresentados de verdade
     uint64_t lastFpsLog_ = 0;
     bool surfaceValid_ = false;
+
+    // ---- front buffer do Xenos (upload + blit — pixels REAIS do título) ---
+    VkBuffer stagingBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMemory_ = VK_NULL_HANDLE;
+    uint8_t* stagingMapped_ = nullptr;
+    VkDeviceSize stagingSize_ = 0;
+    VkImage fbImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory fbMemory_ = VK_NULL_HANDLE;
+    uint32_t fbWidth_ = 0;
+    uint32_t fbHeight_ = 0;
+    uint32_t fbFormat_ = 0;
 };
 
 } // namespace fh2::vulkan

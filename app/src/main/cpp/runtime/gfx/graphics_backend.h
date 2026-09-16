@@ -40,6 +40,20 @@ public:
     // retorna false se não há superfície válida (o chamador segue sem flip).
     virtual bool present() = 0;
 
+    // Present REAL do FRONT BUFFER do título (processador de comandos Xenos,
+    // packet PM4_XE_SWAP): faz upload de `data` (rowBytes por linha, w×h,
+    // formato Xenos `xenosFormat`) e o exibe preenchendo a surface.
+    // `data` aponta para memória guest REAL (byte order do guest, big-endian
+    // — para k_8_8_8_8 os bytes já estão na ordem R,G,B,A). Retorna false se
+    // o backend não conseguir (ex.: formato não suportado) — NUNCA desenha
+    // conteúdo inventado.
+    virtual bool presentFrontBuffer(const void* data, uint32_t rowBytes,
+                                    uint32_t w, uint32_t h,
+                                    uint32_t xenosFormat) {
+        (void)data; (void)rowBytes; (void)w; (void)h; (void)xenosFormat;
+        return false;
+    }
+
     virtual const char* name() const = 0;
     virtual SurfaceInfo surfaceInfo() const = 0;
 };

@@ -479,6 +479,7 @@ bool VulkanBackend::recreateSwapchain() {
 
 void VulkanBackend::destroyDeviceAndInstance() {
     destroySwapchainObjects();
+    destroyFrontBufferResources();
     if (surface_ != VK_NULL_HANDLE) {
         vkDestroySurfaceKHR(instance_, surface_, nullptr);
         surface_ = VK_NULL_HANDLE;
@@ -527,8 +528,149 @@ void VulkanBackend::onSurfaceLost() {
 
 
 bool VulkanBackend::present() {
+    return presentInternal(nullptr, 0, 0, 0, 0);
+}
+
+bool VulkanBackend::presentFrontBuffer(const void* data, uint32_t rowBytes,
+                                       uint32_t w, uint32_t h,
+                                       uint32_t xenosFormat) {
+    // Só k_8_8_8_8 (6) neste marco — os outros formatos ficam para o próximo
+    // passo da issue #17 (o CP não chama este método para eles).
+    if (xenosFormat != 6 || data == nullptr) return false;
+    return presentInternal(data, rowBytes, w, h, xenosFormat);
+}
+
+bool VulkanBackend::ensureFrontBufferResources(uint32_t rowBytes, uint32_t w,
+                                               uint32_t h) {
+    const VkDeviceSize needed = VkDeviceSize(rowBytes) * h;
+    if (stagingBuffer_ != VK_NULL_HANDLE && stagingSize_ >= needed &&
+        fbImage_ != VK_NULL_HANDLE && fbWidth_ == w && fbHeight_ == h) {
+        return true;
+    }
+
+    vkDeviceWaitIdle(device_);
+    destroyFrontBufferResources();
+
+    // Staging (host visible, linear) — upload do front buffer guest.
+    VkBufferCreateInfo sbi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    sbi.size = needed;
+    sbi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    sbi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device_, &sbi, nullptr, &stagingBuffer_) != VK_SUCCESS) {
+        VERR("front buffer: vkCreateBuffer staging falhou");
+        return false;
+    }
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device_, stagingBuffer_, &req);
+    uint32_t memType = 0xFFFFFFFFu;
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(pdev_, &memProps);
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((req.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) != 0) {
+            memType = i;
+            break;
+        }
+    }
+    if (memType == 0xFFFFFFFFu) {
+        VERR("front buffer: sem memória host visible");
+        return false;
+    }
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = memType;
+    if (vkAllocateMemory(device_, &mai, nullptr, &stagingMemory_) != VK_SUCCESS) {
+        VERR("front buffer: vkAllocateMemory staging falhou");
+        return false;
+    }
+    vkBindBufferMemory(device_, stagingBuffer_, stagingMemory_, 0);
+    if (vkMapMemory(device_, stagingMemory_, 0, needed, 0,
+                    (void**)&stagingMapped_) != VK_SUCCESS) {
+        VERR("front buffer: vkMapMemory falhou");
+        return false;
+    }
+    stagingSize_ = needed;
+
+    // Imagem linear do front buffer (formato do título: k_8_8_8_8 → R8G8B8A8).
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ici.extent = {w, h, 1};
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_LINEAR;
+    ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateImage(device_, &ici, nullptr, &fbImage_) != VK_SUCCESS) {
+        VERR("front buffer: vkCreateImage falhou");
+        return false;
+    }
+    vkGetImageMemoryRequirements(device_, fbImage_, &req);
+    memType = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((req.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+            memType = i;
+            break;
+        }
+    }
+    if (memType == 0xFFFFFFFFu) memType = mai.memoryTypeIndex;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = memType;
+    if (vkAllocateMemory(device_, &mai, nullptr, &fbMemory_) != VK_SUCCESS) {
+        VERR("front buffer: vkAllocateMemory imagem falhou");
+        return false;
+    }
+    vkBindImageMemory(device_, fbImage_, fbMemory_, 0);
+    fbWidth_ = w;
+    fbHeight_ = h;
+    fbFormat_ = xenosFormat;
+    VLOG("front buffer: recursos prontos (%ux%u, %llu bytes staging)",
+         w, h, (unsigned long long)needed);
+    return true;
+}
+
+void VulkanBackend::destroyFrontBufferResources() {
+    if (stagingBuffer_ != VK_NULL_HANDLE) {
+        vkDestroyBuffer(device_, stagingBuffer_, nullptr);
+        stagingBuffer_ = VK_NULL_HANDLE;
+    }
+    if (stagingMapped_ != nullptr && stagingMemory_ != VK_NULL_HANDLE) {
+        vkUnmapMemory(device_, stagingMemory_);
+        stagingMapped_ = nullptr;
+    }
+    if (stagingMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, stagingMemory_, nullptr);
+        stagingMemory_ = VK_NULL_HANDLE;
+    }
+    if (fbImage_ != VK_NULL_HANDLE) {
+        vkDestroyImage(device_, fbImage_, nullptr);
+        fbImage_ = VK_NULL_HANDLE;
+    }
+    if (fbMemory_ != VK_NULL_HANDLE) {
+        vkFreeMemory(device_, fbMemory_, nullptr);
+        fbMemory_ = VK_NULL_HANDLE;
+    }
+    stagingSize_ = 0;
+    fbWidth_ = fbHeight_ = fbFormat_ = 0;
+}
+
+bool VulkanBackend::presentInternal(const void* data, uint32_t rowBytes,
+                                    uint32_t w, uint32_t h,
+                                    uint32_t xenosFormat) {
     std::lock_guard<std::mutex> lock(gpuMutex_);
     if (!surfaceValid_ || device_ == VK_NULL_HANDLE) return false;
+
+    if (data != nullptr) {
+        if (!ensureFrontBufferResources(rowBytes, w, h)) return false;
+        // Snapshot REAL do front buffer guest (bytes BE = R,G,B,A em k_8_8_8_8).
+        memcpy(stagingMapped_, data, size_t(rowBytes) * h);
+    }
 
     // Slot do frame em voo: fence garantido sinalizado antes do reset (o
     // acquire usa um semáforo cuja submissão anterior já terminou — o
@@ -551,10 +693,6 @@ bool VulkanBackend::present() {
 
     vkResetFences(device_, 1, &inFlight_[f]);
 
-    // Record: render pass com clear PRETO. O backend NÃO inventa conteúdo:
-    // enquanto o Xenos (processador de comandos, issue #17) não produzir o
-    // frame do título, a surface exibe preto — tela colorida aqui seria
-    // fingir que o jogo está rodando.
     VkCommandBuffer cb = cmds_[idx];
     vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -564,22 +702,97 @@ bool VulkanBackend::present() {
         return false;
     }
 
-    VkClearValue clear{};
-    clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rp.renderPass = renderPass_;
-    rp.framebuffer = framebuffers_[idx];
-    rp.renderArea.extent = extent_;
-    rp.clearValueCount = 1;
-    rp.pClearValues = &clear;
-    vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdEndRenderPass(cb);
+    if (data == nullptr) {
+        // Sem frame do título: render pass com clear PRETO. O backend NÃO
+        // inventa conteúdo — tela colorida aqui fingiria que o jogo roda.
+        VkClearValue clear{};
+        clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        rp.renderPass = renderPass_;
+        rp.framebuffer = framebuffers_[idx];
+        rp.renderArea.extent = extent_;
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clear;
+        vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdEndRenderPass(cb);
+    } else {
+        // Frame REAL do título: copy staging → imagem → blit p/ o swapchain.
+        VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.srcAccessMask = 0;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = fbImage_;
+        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &toDst);
+
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = rowBytes / 4; // texels (pitch do guest)
+        region.bufferImageHeight = 0;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {w, h, 1};
+        vkCmdCopyBufferToImage(cb, stagingBuffer_, fbImage_,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                               &region);
+
+        VkImageMemoryBarrier toSrc = toDst;
+        toSrc.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &toSrc);
+
+        VkImageMemoryBarrier swToDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        swToDst.srcAccessMask = 0;
+        swToDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        swToDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        swToDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        swToDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swToDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        swToDst.image = images_[idx];
+        swToDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &swToDst);
+
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[1] = {int32_t(fbWidth_), int32_t(fbHeight_), 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[1] = {int32_t(extent_.width), int32_t(extent_.height),
+                              1};
+        vkCmdBlitImage(cb, fbImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       images_[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                       &blit, VK_FILTER_LINEAR);
+
+        VkImageMemoryBarrier swToPresent = swToDst;
+        swToPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        swToPresent.dstAccessMask = 0;
+        swToPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        swToPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &swToPresent);
+    }
+
     if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
         recreateFenceSignaled(f);
         return false;
     }
 
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    // O acquire precisa valer no estágio que toca a imagem do swapchain:
+    // render pass escreve em COLOR_ATTACHMENT_OUTPUT; o blit escreve em
+    // TRANSFER — cada caminho com o wait correto (sem race com o compositor).
+    VkPipelineStageFlags waitStage =
+        (data == nullptr) ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                          : VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount = 1;
     si.pWaitSemaphores = &imageAvailable_[f];

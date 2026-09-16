@@ -83,6 +83,10 @@ uint64_t setupTls(uint8_t* base, const XexImageInfo& img,
 
 // Encerramento é feito por kern::terminateCurrentThread (longjmp direto).
 
+// Imagem do boot (TLS template etc. p/ threads fora do ExCreateThread — ex.:
+// thread de interrupção gráfica do GPU).
+XexImageInfo g_bootImage{};
+
 } // namespace
 
 uint64_t populateMagicTable(uint8_t* guestMemZero) {
@@ -211,6 +215,7 @@ void guestThreadBody(kern::GuestThread& t, uint8_t* base,
 
 void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
                   std::atomic<bool>& stopRequested) {
+    g_bootImage = img; // p/ graphicsInterruptLoop (TEB/TLS)
     PPCContext ctx{};
     ctx.msr = 0x200A000;
     kern::setHostThreadId(1); // thread principal do título = kernel id 1
@@ -282,6 +287,79 @@ void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
         GLOG("%zu thread(s) guest não terminaram no stop (unwind no próximo "
              "ponto de bloqueio)", alive);
     }
+}
+
+// ------------------------------------------------- interrupção gráfica (GPU)
+
+namespace {
+
+// Endereços do callback registrados por VdSetGraphicsInterruptCallback —
+// globais para o loop re-ler a cada vblank (re-registro do driver).
+std::atomic<uint32_t> g_gfxIntCb{0};
+std::atomic<uint32_t> g_gfxIntArg{0};
+
+} // namespace
+
+void setGraphicsInterrupt(uint32_t callbackAddr, uint32_t callbackArg) {
+    g_gfxIntCb.store(callbackAddr);
+    g_gfxIntArg.store(callbackArg);
+}
+
+void graphicsInterruptLoop() {
+    // Thread de interrupção do GPU (vblank ~60 Hz — a mesma taxa do console).
+    // Semântica real: o kernel chama callback(bool normal, user_data) em
+    // contexto de interrupção; o D3D do título usa isso p/ fences/vsync.
+    uint8_t* base = kern::guestMem();
+    const XexImageInfo& img = g_bootImage;
+    if (!base) return;
+
+    PPCContext ctx{};
+    ctx.msr = 0x200A000;
+    const uint32_t id = kern::currentThreadId(); // id de kernel dedicado
+    kern::setHostThreadId(id);
+
+    const uint64_t stackSize = 0x20000; // 128k — igual ao interrupt do kernel
+    const uint64_t stack = kern::virtWindow().alloc(stackSize);
+    if (!stack) {
+        GLOG("interrupção gráfica: sem stack — callbacks não serão entregues");
+        return;
+    }
+    ctx.r1.u64 = (stack + stackSize - 0x1000) & ~0xFull;
+    ctx.r13.u64 = setupTls(base, img, id, ctx.r1.u64, stack);
+
+    GLOG("thread de interrupção gráfica ativa (vblank 60 Hz, id=%u, "
+         "stack=0x%08llX)", id, (unsigned long long)stack);
+    while (!kern::stopRequested()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        const uint32_t cb = g_gfxIntCb.load();
+        if (!cb) continue;
+        PPCFunc* fn = lookup(cb);
+        if (!fn) {
+            static bool s_warned = false;
+            if (!s_warned) {
+                s_warned = true;
+                GLOG("callback de interrupção 0x%08X sem função recompilada",
+                     cb);
+            }
+            continue;
+        }
+        ctx.r3.u64 = 0; // interrupção normal (não acquire/lock)
+        ctx.r4.u64 = g_gfxIntArg.load();
+        jmp_buf env;
+        kern::setUnwindTarget(&env);
+        const int jump = setjmp(env);
+        if (jump == 0) {
+            fn(ctx, base); // callback REAL do guest (uma chamada por vblank)
+        } else if (jump == 2) {
+            break; // título encerrado — thread de interrupção sai
+        } else {
+            break; // stop do usuário
+        }
+        kern::setUnwindTarget(nullptr);
+    }
+    kern::setUnwindTarget(nullptr);
+    if (stack) kern::virtWindow().free(stack);
+    GLOG("thread de interrupção gráfica encerrada");
 }
 
 } // namespace fh2::ppc

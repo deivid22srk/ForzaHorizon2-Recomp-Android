@@ -34,6 +34,7 @@
 #include "runtime/audio/audio_output.h"
 #include "runtime/fs/fs_provider.h"
 #include "runtime/gfx/graphics_backend.h"
+#include "runtime/gpu/cmd_processor.h"
 #include "runtime/input/input_state.h"
 #include "runtime/ppc/kernel_state.h"
 
@@ -92,6 +93,8 @@ static constexpr size_t kMemTotal =
     static_cast<size_t>(kPhysAliasBase + kPhysAliasSize + 0x1000000ull);
 
 PpcRuntime::~PpcRuntime() {
+    // Para o processador de comandos do Xenos antes de tocar na memória.
+    fh2::gpu::CommandProcessor::instance().stop();
     // fecha arquivos guest abertos (fds de SAF/local) antes de desmapear
     kern::filesCloseAll();
     if (memBase_) {
@@ -300,6 +303,10 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
                             imageInfo_);
         });
         guestStarted_ = true; // permanente: memória não pode ser desmapeada
+        // Processador de comandos do Xenos (issue #17): consome o ring buffer
+        // REAL do guest (PM4) e apresenta os frames que o título produzir —
+        // ocioso até VdInitializeRingBuffer + CP_RB_WPTR.
+        fh2::gpu::CommandProcessor::instance().start();
         // Driver de frames ANTES do primeiro VdSwap: mantém o pipeline
         // gráfico vivo (clear preto — sem conteúdo inventado) enquanto o
         // guest boota. Encerra no PRIMEIRO VdSwap do jogo OU quando o guest
@@ -369,6 +376,7 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
             // runGuestMain; heap/janelas/waitables/TLS zerados) + imagem
             // restaurada ao estado de boot frio.
             kern::resetTitleState();
+            fh2::gpu::CommandProcessor::instance().resetForRelaunch();
             if (!pristineImage_.empty()) {
                 memcpy(reinterpret_cast<uint8_t*>(memBase_) + imageInfo_.base,
                        pristineImage_.data(), pristineImage_.size());
