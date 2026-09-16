@@ -2,10 +2,10 @@
 //
 // GERADO por tools/gen_kernel_hle.py — 413 símbolos exigidos por
 // ppc_func_mapping.cpp. Três caminhos:
-//   REAL  (111): delega para fh2::kern::real_* com semântica real
+//   REAL  (131): delega para fh2::kern::real_* com semântica real
 //         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
 //   FAIL  (26): retorna status de falha REAL do estado do sistema
-//   stub  (276): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+//   stub  (256): log-once + NTSTATUS 0 (semântica pendente — issue #16)
 // NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
@@ -1715,183 +1715,143 @@ void __imp__VdCallGraphicsNotificationRoutines(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("VdCallGraphicsNotificationRoutines", ctx);
 }
 
-// VdEnableDisableClockGating: semântica real pendente (issue #16)
+// VdEnableDisableClockGating: semântica REAL (kernel_real.cpp)
 void __imp__VdEnableDisableClockGating(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdEnableDisableClockGating", ctx);
-    FH2_HLE_ONCE(VdEnableDisableClockGating, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdEnableDisableClockGating(ctx, base);
     fh2::kern::traceReturn("VdEnableDisableClockGating", ctx);
 }
 
-// VdEnableRingBufferRPtrWriteBack: semântica real pendente (issue #16)
+// VdEnableRingBufferRPtrWriteBack: semântica REAL (kernel_real.cpp)
 void __imp__VdEnableRingBufferRPtrWriteBack(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdEnableRingBufferRPtrWriteBack", ctx);
-    FH2_HLE_ONCE(VdEnableRingBufferRPtrWriteBack, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdEnableRingBufferRPtrWriteBack(ctx, base);
     fh2::kern::traceReturn("VdEnableRingBufferRPtrWriteBack", ctx);
 }
 
-// VdGetCurrentDisplayGamma: semântica real pendente (issue #16)
+// VdGetCurrentDisplayGamma: semântica REAL (kernel_real.cpp)
 void __imp__VdGetCurrentDisplayGamma(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdGetCurrentDisplayGamma", ctx);
-    FH2_HLE_ONCE(VdGetCurrentDisplayGamma, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdGetCurrentDisplayGamma(ctx, base);
     fh2::kern::traceReturn("VdGetCurrentDisplayGamma", ctx);
 }
 
-// VdGetCurrentDisplayInformation: semântica real pendente (issue #16)
+// VdGetCurrentDisplayInformation: semântica REAL (kernel_real.cpp)
 void __imp__VdGetCurrentDisplayInformation(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdGetCurrentDisplayInformation", ctx);
-    FH2_HLE_ONCE(VdGetCurrentDisplayInformation, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdGetCurrentDisplayInformation(ctx, base);
     fh2::kern::traceReturn("VdGetCurrentDisplayInformation", ctx);
 }
 
-// VdGetSystemCommandBuffer: semântica real pendente (issue #16)
+// VdGetSystemCommandBuffer: semântica REAL (kernel_real.cpp)
 void __imp__VdGetSystemCommandBuffer(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdGetSystemCommandBuffer", ctx);
-    FH2_HLE_ONCE(VdGetSystemCommandBuffer, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdGetSystemCommandBuffer(ctx, base);
     fh2::kern::traceReturn("VdGetSystemCommandBuffer", ctx);
 }
 
-// VdInitializeEngines: semântica real pendente (issue #16)
+// VdInitializeEngines: semântica REAL (kernel_real.cpp)
 void __imp__VdInitializeEngines(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdInitializeEngines", ctx);
-    FH2_HLE_ONCE(VdInitializeEngines, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdInitializeEngines(ctx, base);
     fh2::kern::traceReturn("VdInitializeEngines", ctx);
 }
 
-// VdInitializeRingBuffer: semântica real pendente (issue #16)
+// VdInitializeRingBuffer: semântica REAL (kernel_real.cpp)
 void __imp__VdInitializeRingBuffer(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdInitializeRingBuffer", ctx);
-    FH2_HLE_ONCE(VdInitializeRingBuffer, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdInitializeRingBuffer(ctx, base);
     fh2::kern::traceReturn("VdInitializeRingBuffer", ctx);
 }
 
-// VdInitializeScalerCommandBuffer: semântica real pendente (issue #16)
+// VdInitializeScalerCommandBuffer: semântica REAL (kernel_real.cpp)
 void __imp__VdInitializeScalerCommandBuffer(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdInitializeScalerCommandBuffer", ctx);
-    FH2_HLE_ONCE(VdInitializeScalerCommandBuffer, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdInitializeScalerCommandBuffer(ctx, base);
     fh2::kern::traceReturn("VdInitializeScalerCommandBuffer", ctx);
 }
 
-// VdIsHSIOTrainingSucceeded: semântica real pendente (issue #16)
+// VdIsHSIOTrainingSucceeded: semântica REAL (kernel_real.cpp)
 void __imp__VdIsHSIOTrainingSucceeded(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdIsHSIOTrainingSucceeded", ctx);
-    FH2_HLE_ONCE(VdIsHSIOTrainingSucceeded, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdIsHSIOTrainingSucceeded(ctx, base);
     fh2::kern::traceReturn("VdIsHSIOTrainingSucceeded", ctx);
 }
 
-// VdPersistDisplay: semântica real pendente (issue #16)
+// VdPersistDisplay: semântica REAL (kernel_real.cpp)
 void __imp__VdPersistDisplay(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdPersistDisplay", ctx);
-    FH2_HLE_ONCE(VdPersistDisplay, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdPersistDisplay(ctx, base);
     fh2::kern::traceReturn("VdPersistDisplay", ctx);
 }
 
-// VdQueryVideoFlags: semântica real pendente (issue #16)
+// VdQueryVideoFlags: semântica REAL (kernel_real.cpp)
 void __imp__VdQueryVideoFlags(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdQueryVideoFlags", ctx);
-    FH2_HLE_ONCE(VdQueryVideoFlags, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdQueryVideoFlags(ctx, base);
     fh2::kern::traceReturn("VdQueryVideoFlags", ctx);
 }
 
-// VdQueryVideoMode: semântica real pendente (issue #16)
+// VdQueryVideoMode: semântica REAL (kernel_real.cpp)
 void __imp__VdQueryVideoMode(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdQueryVideoMode", ctx);
-    FH2_HLE_ONCE(VdQueryVideoMode, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdQueryVideoMode(ctx, base);
     fh2::kern::traceReturn("VdQueryVideoMode", ctx);
 }
 
-// VdRetrainEDRAM: semântica real pendente (issue #16)
+// VdRetrainEDRAM: semântica REAL (kernel_real.cpp)
 void __imp__VdRetrainEDRAM(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdRetrainEDRAM", ctx);
-    FH2_HLE_ONCE(VdRetrainEDRAM, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdRetrainEDRAM(ctx, base);
     fh2::kern::traceReturn("VdRetrainEDRAM", ctx);
 }
 
-// VdRetrainEDRAMWorker: semântica real pendente (issue #16)
+// VdRetrainEDRAMWorker: semântica REAL (kernel_real.cpp)
 void __imp__VdRetrainEDRAMWorker(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdRetrainEDRAMWorker", ctx);
-    FH2_HLE_ONCE(VdRetrainEDRAMWorker, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdRetrainEDRAMWorker(ctx, base);
     fh2::kern::traceReturn("VdRetrainEDRAMWorker", ctx);
 }
 
-// VdSetDisplayMode: semântica real pendente (issue #16)
+// VdSetDisplayMode: semântica REAL (kernel_real.cpp)
 void __imp__VdSetDisplayMode(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdSetDisplayMode", ctx);
-    FH2_HLE_ONCE(VdSetDisplayMode, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdSetDisplayMode(ctx, base);
     fh2::kern::traceReturn("VdSetDisplayMode", ctx);
 }
 
-// VdSetDisplayModeOverride: semântica real pendente (issue #16)
+// VdSetDisplayModeOverride: semântica REAL (kernel_real.cpp)
 void __imp__VdSetDisplayModeOverride(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdSetDisplayModeOverride", ctx);
-    FH2_HLE_ONCE(VdSetDisplayModeOverride, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdSetDisplayModeOverride(ctx, base);
     fh2::kern::traceReturn("VdSetDisplayModeOverride", ctx);
 }
 
-// VdSetGraphicsInterruptCallback: semântica real pendente (issue #16)
+// VdSetGraphicsInterruptCallback: semântica REAL (kernel_real.cpp)
 void __imp__VdSetGraphicsInterruptCallback(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdSetGraphicsInterruptCallback", ctx);
-    FH2_HLE_ONCE(VdSetGraphicsInterruptCallback, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdSetGraphicsInterruptCallback(ctx, base);
     fh2::kern::traceReturn("VdSetGraphicsInterruptCallback", ctx);
 }
 
-// VdSetSystemCommandBufferGpuIdentifierAddress: semântica real pendente (issue #16)
+// VdSetSystemCommandBufferGpuIdentifierAddress: semântica REAL (kernel_real.cpp)
 void __imp__VdSetSystemCommandBufferGpuIdentifierAddress(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdSetSystemCommandBufferGpuIdentifierAddress", ctx);
-    FH2_HLE_ONCE(VdSetSystemCommandBufferGpuIdentifierAddress, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdSetSystemCommandBufferGpuIdentifierAddress(ctx, base);
     fh2::kern::traceReturn("VdSetSystemCommandBufferGpuIdentifierAddress", ctx);
 }
 
-// VdShutdownEngines: semântica real pendente (issue #16)
+// VdShutdownEngines: semântica REAL (kernel_real.cpp)
 void __imp__VdShutdownEngines(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdShutdownEngines", ctx);
-    FH2_HLE_ONCE(VdShutdownEngines, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdShutdownEngines(ctx, base);
     fh2::kern::traceReturn("VdShutdownEngines", ctx);
 }
 
-// VdSwap: present do GPU — issue #17 (gráficos reais)
+// VdSwap: semântica REAL (kernel_real.cpp)
 void __imp__VdSwap(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("VdSwap", ctx);
-    FH2_HLE_ONCE(VdSwap, "present do GPU — issue #17 (gráficos reais)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_VdSwap(ctx, base);
     fh2::kern::traceReturn("VdSwap", ctx);
 }
 

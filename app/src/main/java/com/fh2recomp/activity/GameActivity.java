@@ -42,7 +42,7 @@ public class GameActivity extends AppCompatActivity {
         Uri assetsUri = getIntent().getData();
         int resolutionScale = getIntent().getIntExtra("resolution_scale", 75);
         boolean fps60 = getIntent().getBooleanExtra("fps_60", true);
-        boolean useVulkan = getIntent().getBooleanExtra("use_vulkan", false);
+        boolean useVulkan = getIntent().getBooleanExtra("use_vulkan", true);
         int hudOpacity = getIntent().getIntExtra("hud_opacity", 70);
 
         // Contexto + URI SAF para a cópia lazy nativa, e filesDir para o FS

@@ -34,9 +34,19 @@ public:
     virtual void setFpsTarget(int fps) = 0;
     virtual int fpsTarget() const = 0;
 
+    // Present REAL de um frame (flip): chamado por VdSwap (guest) e pelo
+    // driver de frames do runtime enquanto o jogo não assumiu o present.
+    // Bloqueia até o frame estar na tela (semântica de vblank do console);
+    // retorna false se não há superfície válida (o chamador segue sem flip).
+    virtual bool present() = 0;
+
     virtual const char* name() const = 0;
     virtual SurfaceInfo surfaceInfo() const = 0;
 };
+
+/** Backend ATIVO para o kernel (VdSwap): registrado no boot, limpo no stop. */
+void setActiveBackend(GraphicsBackend* backend);
+GraphicsBackend* activeBackend();
 
 /** Cria o backend pedido; se Vulkan não estiver disponível no device, cai para GLES. */
 std::unique_ptr<GraphicsBackend> createBackend(bool preferVulkan, int resolutionScalePct);

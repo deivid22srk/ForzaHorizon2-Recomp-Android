@@ -80,7 +80,7 @@ public class MainActivity extends AppCompatActivity {
         bindSeek(R.id.seek_resolution, R.id.label_resolution, "resolution_scale", 75, v -> v + "%");
         bindSeek(R.id.seek_opacity, R.id.label_opacity, "hud_opacity", 70, v -> v + "%");
         bindSwitch(R.id.switch_fps, "fps_60", true);
-        bindSwitch(R.id.switch_backend, "use_vulkan", false);
+        bindSwitch(R.id.switch_backend, "use_vulkan", true);
     }
 
     private void openFolderPicker() {
@@ -100,7 +100,7 @@ public class MainActivity extends AppCompatActivity {
         intent.setData(assetsUri);
         intent.putExtra("resolution_scale", prefs.getInt("resolution_scale", 75));
         intent.putExtra("fps_60", prefs.getBoolean("fps_60", true));
-        intent.putExtra("use_vulkan", prefs.getBoolean("use_vulkan", false));
+        intent.putExtra("use_vulkan", prefs.getBoolean("use_vulkan", true));
         intent.putExtra("hud_opacity", prefs.getInt("hud_opacity", 70));
         startActivity(intent);
     }

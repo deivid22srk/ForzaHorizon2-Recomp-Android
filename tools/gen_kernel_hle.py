@@ -86,6 +86,18 @@ REAL = {
     'XamLoaderTerminateTitle',
     'XamUserGetSigninState',
     'XexLoadImage', 'XexUnloadImage', 'XexGetProcedureAddress',
+    # vídeo real (issue #17 — backend Vulkan/GLES + estado Vd em kernel_real.cpp)
+    'VdSwap',
+    'VdQueryVideoMode', 'VdQueryVideoFlags',
+    'VdGetCurrentDisplayGamma', 'VdGetCurrentDisplayInformation',
+    'VdSetSystemCommandBufferGpuIdentifierAddress', 'VdGetSystemCommandBuffer',
+    'VdInitializeRingBuffer', 'VdEnableRingBufferRPtrWriteBack',
+    'VdSetGraphicsInterruptCallback',
+    'VdInitializeEngines', 'VdShutdownEngines', 'VdPersistDisplay',
+    'VdEnableDisableClockGating', 'VdIsHSIOTrainingSucceeded',
+    'VdRetrainEDRAM', 'VdRetrainEDRAMWorker',
+    'VdSetDisplayMode', 'VdSetDisplayModeOverride',
+    'VdInitializeScalerCommandBuffer',
 }
 
 # ---- falhas honestas: o recurso real não existe neste boot ----

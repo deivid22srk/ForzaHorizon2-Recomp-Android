@@ -625,6 +625,9 @@ void resetTitleState() {
     g_heap.reset();
     g_virt.reset();
     g_phys.reset();
+    // Vídeo (Vd*): o novo boot reconfigura TUDO via Vd* — inclui o buffer de
+    // sistema (a janela virtual foi resetada, os endereços antigos morreram).
+    vdGraphics() = VdGraphicsState{};
     g_stop = false;
     g_titleTerminated = false;
     // launch data: PRESERVADO (o relaunch o consome). Módulos secundários:

@@ -129,6 +129,28 @@ void real_XexUnloadImage(PPCContext& ctx, uint8_t* base);
 void real_XexGetProcedureAddress(PPCContext& ctx, uint8_t* base);
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base);
 
+// ------------------------------------------------------ vídeo (Vd*, issue #17)
+void real_VdSwap(PPCContext& ctx, uint8_t* base);
+void real_VdQueryVideoMode(PPCContext& ctx, uint8_t* base);
+void real_VdQueryVideoFlags(PPCContext& ctx, uint8_t* base);
+void real_VdGetCurrentDisplayGamma(PPCContext& ctx, uint8_t* base);
+void real_VdGetCurrentDisplayInformation(PPCContext& ctx, uint8_t* base);
+void real_VdSetSystemCommandBufferGpuIdentifierAddress(PPCContext& ctx, uint8_t* base);
+void real_VdGetSystemCommandBuffer(PPCContext& ctx, uint8_t* base);
+void real_VdInitializeRingBuffer(PPCContext& ctx, uint8_t* base);
+void real_VdEnableRingBufferRPtrWriteBack(PPCContext& ctx, uint8_t* base);
+void real_VdSetGraphicsInterruptCallback(PPCContext& ctx, uint8_t* base);
+void real_VdInitializeEngines(PPCContext& ctx, uint8_t* base);
+void real_VdShutdownEngines(PPCContext& ctx, uint8_t* base);
+void real_VdPersistDisplay(PPCContext& ctx, uint8_t* base);
+void real_VdEnableDisableClockGating(PPCContext& ctx, uint8_t* base);
+void real_VdIsHSIOTrainingSucceeded(PPCContext& ctx, uint8_t* base);
+void real_VdRetrainEDRAM(PPCContext& ctx, uint8_t* base);
+void real_VdRetrainEDRAMWorker(PPCContext& ctx, uint8_t* base);
+void real_VdSetDisplayMode(PPCContext& ctx, uint8_t* base);
+void real_VdSetDisplayModeOverride(PPCContext& ctx, uint8_t* base);
+void real_VdInitializeScalerCommandBuffer(PPCContext& ctx, uint8_t* base);
+
 // ------------------------------------------------------- rastreio HLE
 //
 // Diagnóstico REAL do boot: cada import chamado pelo guest é registrado

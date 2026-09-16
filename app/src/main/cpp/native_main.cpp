@@ -108,6 +108,7 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
     s.fs.initialize(env);
     s.gfx = fh2::gfx::createBackend(useVulkan != JNI_FALSE, resolutionScalePct);
     if (s.gfx) s.gfx->setFpsTarget(fps60 != JNI_FALSE ? 60 : 30);
+    fh2::gfx::setActiveBackend(s.gfx.get()); // VdSwap apresenta neste backend
     s.audio = fh2::audio::AudioOutput::create();
     s.ppc = std::make_unique<fh2::ppc::PpcRuntime>();
     bool ok = s.ppc->initialize(&s.fs);
@@ -117,6 +118,7 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
     if (!ok) {
         LOGE("nativeBoot: inicialização do guest falhou (memória/loader XEX — "
              "ver FH2/PPC e FH2/XEX no logcat)");
+        fh2::gfx::setActiveBackend(nullptr);
         s.ppc.reset();
         s.audio.reset();
         s.gfx.reset();
@@ -185,6 +187,7 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeStop(JNIEnv*, jobject) {
         s.ppc.release();
     }
     if (s.window) { ANativeWindow_release(s.window); s.window = nullptr; }
+    fh2::gfx::setActiveBackend(nullptr);
     s.gfx.reset();
     s.audio.reset();
     s.ppc.reset();

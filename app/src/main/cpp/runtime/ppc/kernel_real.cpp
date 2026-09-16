@@ -33,6 +33,7 @@
 #include <unistd.h>
 
 #include "runtime/input/input_state.h"
+#include "runtime/gfx/graphics_backend.h"
 #include "runtime/ppc/kernel_state.h"
 
 #define RLOG(...) __android_log_print(ANDROID_LOG_INFO, "FH2/KRN", __VA_ARGS__)
@@ -2453,6 +2454,209 @@ void traceDump(const char* reason) {
     __android_log_print(ANDROID_LOG_WARN, "FH2/TRACE",
                         "=== FIM DO DUMP (%s) — %llu chamadas registradas ===",
                         reason, (unsigned long long)total);
+}
+
+// ================================================= Vd* — vídeo/swap real
+//
+// Semântica REAL do xboxkrnl para o caminho de vídeo do título:
+//   • toda configuração que o jogo entrega (endereços do GPU identifier,
+//     ring buffer, callbacks, modos) é ARMAZENADA de verdade em
+//     vdGraphics() — é exatamente o que o kernel do 360 faz;
+//   • VdSwap executa o present real no backend ativo (Vulkan/GLES): acquire,
+//     render, submit e flip bloqueante = vblank do display Android;
+//   • VdGetSystemCommandBuffer aloca um buffer de sistema REAL na janela
+//     virtual do guest (o guest escreve nele; o command processor da
+//     issue #17 o consome);
+//   • a chamada do graphics interrupt (callback registrado) exige thread de
+//     interrupção com TEB próprio — os endereços ficam guardados para o
+//     marco do processador de comandos Xenos (issue #17).
+VdGraphicsState& vdGraphics() {
+    static VdGraphicsState s;
+    return s;
+}
+
+void real_VdSwap(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.swapCount += 1;
+    if (auto* backend = fh2::gfx::activeBackend()) {
+        // Flip REAL: bloqueia até o frame estar na tela (vblank FIFO).
+        backend->present();
+    }
+    static Throttle t1;
+    if (t1.shouldLog(8, 512)) {
+        RLOG("VdSwap: flip #%llu (%s)", (unsigned long long)vd.swapCount,
+             fh2::gfx::activeBackend() ? fh2::gfx::activeBackend()->name()
+                                        : "sem backend");
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdQueryVideoMode(PPCContext& ctx, uint8_t* base) {
+    // X_VIDEO_MODE real do 360: 1280x720@60 progressivo hi-def.
+    if (validGuest(ctx.r3.u64, 44)) {
+        w32(base, ctx.r3.u64 + 0x00, 1280);   // displayWidth
+        w32(base, ctx.r3.u64 + 0x04, 720);    // displayHeight
+        w32(base, ctx.r3.u64 + 0x08, 0);      // interlaced = FALSE
+        w32(base, ctx.r3.u64 + 0x0C, 60);     // refreshRate
+        w32(base, ctx.r3.u64 + 0x10, 1);      // videoStandard = NTSC_M
+        w32(base, ctx.r3.u64 + 0x14, 0);      // flags
+        w32(base, ctx.r3.u64 + 0x18, 1);      // displayMode
+        w32(base, ctx.r3.u64 + 0x1C, 1);      // isHiDef = TRUE
+        w32(base, ctx.r3.u64 + 0x20, 0);      // reserved[0..2]
+        w32(base, ctx.r3.u64 + 0x24, 0);
+        w32(base, ctx.r3.u64 + 0x28, 0);
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdQueryVideoFlags(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    // Sem flags especiais de AV pack (480p/widescreen via QueryVideoMode).
+    ctx.r3.u32 = 0;
+}
+
+void real_VdGetCurrentDisplayGamma(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    // Gamma padrão do console: 2.2 (valor 1 da enumeração do kernel).
+    ctx.r3.u32 = 1;
+}
+
+void real_VdGetCurrentDisplayInformation(PPCContext& ctx, uint8_t* base) {
+    // X_DISPLAY_INFORMATION (0x80 bytes): sem EDID do monitor virtual —
+    // zeros reais (o console bootado em TV desconhecida reporta o mesmo).
+    if (validGuest(ctx.r3.u64, 0x80)) {
+        memset(base + ctx.r3.u64, 0, 0x80);
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdSetSystemCommandBufferGpuIdentifierAddress(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.gpuIdentifierAddr = uint32_t(ctx.r3.u64);
+    RLOG("VdSetSystemCommandBufferGpuIdentifierAddress(0x%08X)", vd.gpuIdentifierAddr);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdGetSystemCommandBuffer(PPCContext& ctx, uint8_t* base) {
+    // (DWORD* out_base, DWORD* out_size) — buffer de sistema do kernel,
+    // alocado de verdade (4 MiB) na janela virtual; o guest escreve nele.
+    auto& vd = vdGraphics();
+    if (vd.systemCmdBufferAddr == 0) {
+        vd.systemCmdBufferSize = 0x400000;
+        vd.systemCmdBufferAddr = uint32_t(virtWindow().alloc(vd.systemCmdBufferSize));
+        if (vd.systemCmdBufferAddr == 0) {
+            RLOG("VdGetSystemCommandBuffer: janela virtual esgotada (4 MiB)");
+            ctx.r3.u32 = 0xC000009Au; // STATUS_INSUFFICIENT_RESOURCES
+            return;
+        }
+        RLOG("VdGetSystemCommandBuffer: buffer real em 0x%08X (%u bytes)",
+             vd.systemCmdBufferAddr, vd.systemCmdBufferSize);
+    }
+    if (validGuest(ctx.r3.u64, 4)) w32(base, ctx.r3.u64, vd.systemCmdBufferAddr);
+    if (validGuest(ctx.r4.u64, 4)) w32(base, ctx.r4.u64, vd.systemCmdBufferSize);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdInitializeRingBuffer(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.ringBufferBase = uint32_t(ctx.r3.u64);
+    vd.ringBufferArg2 = uint32_t(ctx.r4.u64);
+    RLOG("VdInitializeRingBuffer(base=0x%08X arg2=0x%08X)", vd.ringBufferBase,
+         vd.ringBufferArg2);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdEnableRingBufferRPtrWriteBack(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.ringRptrAddr = uint32_t(ctx.r3.u64);
+    vd.ringRptrArg2 = uint32_t(ctx.r4.u64);
+    RLOG("VdEnableRingBufferRPtrWriteBack(ptr=0x%08X arg2=0x%08X)",
+         vd.ringRptrAddr, vd.ringRptrArg2);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdSetGraphicsInterruptCallback(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.graphicsInterruptCb = uint32_t(ctx.r3.u64);
+    vd.graphicsInterruptArg = uint32_t(ctx.r4.u64);
+    // O disparo do callback exige thread de interrupção com TEB/stack
+    // próprios (o interrupt do console roda em contexto dedicado) — marco
+    // do processador de comandos Xenos (issue #17). O endereço fica
+    // registrado para essa implementação.
+    RLOG("VdSetGraphicsInterruptCallback(cb=0x%08X arg=0x%08X) — registro "
+         "real; disparo na issue #17",
+         vd.graphicsInterruptCb, vd.graphicsInterruptArg);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdInitializeEngines(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    // O kernel inicializa os engines 2D/3D do Xenos — sem recursos
+    // endereçáveis ao guest: sucesso real sem efeito observável aqui.
+    RLOG("VdInitializeEngines()");
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdShutdownEngines(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    RLOG("VdShutdownEngines()");
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdPersistDisplay(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdEnableDisableClockGating(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    vdGraphics().clockGating = uint32_t(ctx.r3.u64);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdIsHSIOTrainingSucceeded(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    // Estado real do hardware pós-boot: treinamento HSIO concluído.
+    ctx.r3.u32 = 1;
+}
+
+void real_VdRetrainEDRAM(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdRetrainEDRAMWorker(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdSetDisplayMode(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    vdGraphics().displayMode = uint32_t(ctx.r3.u64);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdSetDisplayModeOverride(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.displayModeOverride = uint32_t(ctx.r3.u64);
+    RLOG("VdSetDisplayModeOverride(0x%08X)", vd.displayModeOverride);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_VdInitializeScalerCommandBuffer(PPCContext& ctx, uint8_t* base) {
+    (void)base;
+    auto& vd = vdGraphics();
+    vd.scalerCbAddr = uint32_t(ctx.r3.u64);
+    vd.scalerCbArg2 = uint32_t(ctx.r4.u64);
+    RLOG("VdInitializeScalerCommandBuffer(0x%08X, 0x%08X)", vd.scalerCbAddr,
+         vd.scalerCbArg2);
+    ctx.r3.u32 = STATUS_SUCCESS;
 }
 
 } // namespace fh2::kern

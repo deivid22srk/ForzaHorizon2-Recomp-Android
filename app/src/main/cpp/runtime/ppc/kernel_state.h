@@ -95,6 +95,46 @@ fh2::ppc::GuestVirtWindow& physWindow();
 void setInputBridge(input::InputState* input);
 input::InputState* inputBridge();
 
+// ------------------------------------------------ gráficos (Vd*/Xenos)
+//
+// Estado REAL do vídeo do console configurado pelo título via Vd*. O kernel
+// HLE registra os endereços guest que o jogo entrega; o present real
+// (VdSwap) conversa com o backend gráfico ativo. O processador de comandos
+// Xenos (issue #17) consome o ring buffer / command buffer registrados aqui
+// — nada disso é inventado: os endereços são EXATAMENTE os que o guest
+// passou para o kernel do 360.
+struct VdGraphicsState {
+    // VdSetSystemCommandBufferGpuIdentifierAddress(gpuAddr)
+    uint32_t gpuIdentifierAddr = 0;
+    // VdGetSystemCommandBuffer: buffer de sistema do kernel (alocado de
+    // verdade na janela virtual; o guest escreve nele)
+    uint32_t systemCmdBufferAddr = 0;
+    uint32_t systemCmdBufferSize = 0;
+    // VdInitializeRingBuffer(base, arg2)
+    uint32_t ringBufferBase = 0;
+    uint32_t ringBufferArg2 = 0;
+    // VdEnableRingBufferRPtrWriteBack(ptr, arg2)
+    uint32_t ringRptrAddr = 0;
+    uint32_t ringRptrArg2 = 0;
+    // VdSetGraphicsInterruptCallback(cb, arg) — armazenado de verdade; o
+    // disparo exige thread de interrupção com TEB próprio (issue #17)
+    uint32_t graphicsInterruptCb = 0;
+    uint32_t graphicsInterruptArg = 0;
+    // VdInitializeScalerCommandBuffer(p1, p2)
+    uint32_t scalerCbAddr = 0;
+    uint32_t scalerCbArg2 = 0;
+    // VdSetDisplayMode / VdSetDisplayModeOverride / VdEnableDisableClockGating
+    uint32_t displayMode = 0;
+    uint32_t displayModeOverride = 0;
+    uint32_t clockGating = 0;
+    // contagem real de flips (present no backend ativo)
+    uint64_t swapCount = 0;
+};
+
+/** Estado de vídeo do título (Vd*). Sobrevive ao relaunch? NÃO: o reset do
+ *  título zera (o boot reconfigura tudo). */
+VdGraphicsState& vdGraphics();
+
 // ------------------------------------------------------------ threads
 
 using ThreadBody = std::function<void(GuestThread&)>;

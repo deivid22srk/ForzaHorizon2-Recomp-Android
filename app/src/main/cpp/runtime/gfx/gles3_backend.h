@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <EGL/egl.h>
 
 #include "graphics_backend.h"
@@ -24,6 +25,7 @@ public:
 
     bool onSurfaceAvailable(ANativeWindow* window, int width, int height) override;
     void onSurfaceLost() override;
+    bool present() override;
 
     void setResolutionScale(int pct) override { resolutionScale_ = pct; }
     void setFpsTarget(int fps) override { fpsTarget_ = fps; }
@@ -42,6 +44,9 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool contextAlive_ = false;
+    std::mutex eglMutex_;                 // present (guest) × surface (UI thread)
+    uint64_t frameCounter_ = 0;
+    uint64_t lastFpsLog_ = 0;
 
     EGLDisplay display_ = EGL_NO_DISPLAY;
     EGLContext context_ = EGL_NO_CONTEXT;

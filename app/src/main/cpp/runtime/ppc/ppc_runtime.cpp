@@ -300,6 +300,26 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
                             imageInfo_);
         });
         guestStarted_ = true; // permanente: memória não pode ser desmapeada
+        // Driver de frames ANTES do primeiro VdSwap: mantém o pipeline
+        // gráfico vivo (frames do backend — Vulkan/GLES) enquanto o guest
+        // boota. O primeiro flip do jogo (VdSwap) encerra o driver: a partir
+        // daí o ritmo é o do próprio título (semântica de vblank real).
+        std::thread presentDriver;
+        if (gfx) {
+            presentDriver = std::thread([gfx, &stopRequested]() {
+                const int fps = gfx->fpsTarget() > 0 ? gfx->fpsTarget() : 60;
+                const auto interval = std::chrono::milliseconds(1000 / fps);
+                PLOG("driver de frames ativo (%s @%d fps) até o primeiro "
+                     "VdSwap do guest",
+                     gfx->name(), fps);
+                while (!stopRequested && kern::vdGraphics().swapCount == 0) {
+                    std::this_thread::sleep_for(interval);
+                    gfx->present();
+                }
+                PLOG("driver de frames encerrado (%llu flip(s) do guest)",
+                     (unsigned long long)kern::vdGraphics().swapCount);
+            });
+        }
         // Loop de RELAUNCH (semântica real do XAM): XamLoaderLaunchTitle/
         // TerminateTitle encerram o título; se houver relaunch pendente o
         // guest re-executa do entry com estado zerado e o launch data
@@ -352,6 +372,7 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
             PLOG("relançando título (path=\"%s\" flags=0x%08X)",
                  relaunchPath.c_str(), relaunchFlags);
         }
+        if (presentDriver.joinable()) presentDriver.join();
         PLOG("run: guest concluído");
         return;
     }
@@ -360,12 +381,14 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
     PLOG("run: FH2_HAS_RECOMP=0 — modo shell");
 #endif
 
-    // Sem guest: mantém o frame loop do app vivo (setup/shell).
+    // Sem guest: mantém o frame loop do app vivo (setup/shell) apresentando
+    // frames reais no backend.
     int targetFps = gfx ? gfx->fpsTarget() : 60;
     auto frameInterval =
         std::chrono::milliseconds(1000 / (targetFps > 0 ? targetFps : 60));
     while (!stopRequested) {
         std::this_thread::sleep_for(frameInterval);
+        if (gfx) gfx->present();
     }
     PLOG("run: encerrado");
 }
