@@ -277,39 +277,44 @@ struct PPCFPSCRRegister
         
     inline void storeFromGuest(uint32_t value) noexcept
     {
-        csr &= ~RoundMask;
-        csr |= GuestToHost[value & PPC_ROUND_MASK];
+        // Estado REAL do host: os masks de exceção FP do host (bits 0-5 do
+        // MXCSR / FPCR) são SEMPRE preservados — no PPC as exceções de ponto
+        // flutuante só registram flags no FPSCR e NUNCA geram trap (os jogos
+        // não habilitam interrupções de FP). Escrever o cache a zero
+        // desmascararia tudo e o primeiro fdiv/0 mataria o processo.
+        csr = getcsr();
+        csr = (csr & ~RoundMask) | GuestToHost[value & PPC_ROUND_MASK];
         setcsr(csr);
     }
 
     inline void enableFlushModeUnconditional() noexcept
     {
-        csr |= FlushMask;
+        csr = getcsr() | FlushMask;
         setcsr(csr);
     }
 
     inline void disableFlushModeUnconditional() noexcept
     {
-        csr &= ~FlushMask;
+        csr = getcsr() & ~FlushMask;
         setcsr(csr);
     }
 
     inline void enableFlushMode() noexcept
     {
-        if ((csr & FlushMask) != FlushMask) [[unlikely]]
-        {
-            csr |= FlushMask;
-            setcsr(csr);
-        }
+        // Estado REAL do host — o cache `csr` começa zerado em um PPCContext
+        // novo e NÃO reflete o MXCSR: escrevê-lo limparia os masks das
+        // exceções FP (bits 7-12) e a primeira divisão inválida do guest
+        // mataria o processo. No PPC, exceções FP não geram trap.
+        const uint32_t h = getcsr();
+        if ((h & FlushMask) != FlushMask) [[unlikely]]
+            setcsr(h | FlushMask);
     }
 
     inline void disableFlushMode() noexcept
     {
-        if ((csr & FlushMask) != 0) [[unlikely]]
-        {
-            csr &= ~FlushMask;
-            setcsr(csr);
-        }
+        const uint32_t h = getcsr();
+        if ((h & FlushMask) != 0) [[unlikely]]
+            setcsr(h & ~FlushMask);
     }
 };
 

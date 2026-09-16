@@ -56,6 +56,7 @@ void real_MmAllocatePhysicalMemoryEx(PPCContext& ctx, uint8_t* base);
 void real_MmFreePhysicalMemory(PPCContext& ctx, uint8_t* base);
 void real_MmGetPhysicalAddress(PPCContext& ctx, uint8_t* base);
 void real_MmQueryAllocationSize(PPCContext& ctx, uint8_t* base);
+void real_MmQueryStatistics(PPCContext& ctx, uint8_t* base);
 void real_MmCreateKernelStack(PPCContext& ctx, uint8_t* base);
 void real_MmDeleteKernelStack(PPCContext& ctx, uint8_t* base);
 void real_RtlInitializeCriticalSection(PPCContext& ctx, uint8_t* base);
@@ -76,6 +77,23 @@ void real_RtlUpcaseUnicodeChar(PPCContext& ctx, uint8_t* base);
 void real_RtlUnicodeStringToAnsiString(PPCContext& ctx, uint8_t* base);
 void real_RtlFreeAnsiString(PPCContext& ctx, uint8_t* base);
 void real_RtlNtStatusToDosError(PPCContext& ctx, uint8_t* base);
+
+// módulos XEX (semântica real — issue #16)
+void real_XexGetModuleHandle(PPCContext& ctx, uint8_t* base);
+void real_XexGetModuleSection(PPCContext& ctx, uint8_t* base);
+void real_XexCheckExecutablePrivilege(PPCContext& ctx, uint8_t* base);
+
+// arquivos — Nt I/O real sobre a pasta SAF/local (issues #16 + #19)
+void real_NtCreateFile(PPCContext& ctx, uint8_t* base);
+void real_NtOpenFile(PPCContext& ctx, uint8_t* base);
+void real_NtReadFile(PPCContext& ctx, uint8_t* base);
+void real_NtReadFileScatter(PPCContext& ctx, uint8_t* base);
+void real_NtWriteFile(PPCContext& ctx, uint8_t* base);
+void real_NtQueryInformationFile(PPCContext& ctx, uint8_t* base);
+void real_NtQueryVolumeInformationFile(PPCContext& ctx, uint8_t* base);
+void real_NtSetInformationFile(PPCContext& ctx, uint8_t* base);
+void real_NtFlushBuffersFile(PPCContext& ctx, uint8_t* base);
+void real_NtQueryFullAttributesFile(PPCContext& ctx, uint8_t* base);
 void real_DbgPrint(PPCContext& ctx, uint8_t* base);
 void real_DbgBreakPoint(PPCContext& ctx, uint8_t* base);
 void real__snprintf(PPCContext& ctx, uint8_t* base);

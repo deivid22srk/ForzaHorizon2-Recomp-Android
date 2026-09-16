@@ -303,3 +303,86 @@ Validação no host (hostrun_boot.sh, 503 TUs): o guest passa pelo boot do CRT
 no heap novo) e continua EXECUTANDO (60 s sem sair, watchdog interrompeu) —
 antes encerrava em 7 ms. hostcheck: 100% dos TUs do runtime + amostra de 70
 gerados compilam.
+
+## D26 — Critical sections com semântica REAL de memória guest (2026-09-16)
+
+**Sintoma**: boot travava após `RtlInitializeCriticalSection` (TRACE 4) — o CRT
+entrava numa critical section ESTÁTICA da imagem (0x833DB4E0) que o HLE nunca
+inicializara (waitable host criado "travado") → espera infinita.
+
+**Diagnóstico (host, backtrace async-signal-safe)**: `real_RtlEnterCriticalSection`
+bloqueado em `waitForMultiple` na critsec estática.
+
+**Fix**: RTL_CRITICAL_SECTION é uma estrutura de 0x18 bytes EM MEMÓRIA GUEST
+(não objeto de kernel). Layout extraído do binário do FH2 (dump real):
+flags 0x01000400 @+0, lista de espera vazia (aponta p/ si) @+8/+C,
+`lock_count` (-1=livre) @+0x10, `owning_thread` @+0x14. Enter/Leave/TryEnter
+operam sobre esses campos com a semântica ntdll (fast path, reentrância por
+owner id, contenção via cv do kernel). Endereços chegam sign-extendidos do
+PPC — mascarados para 32 bits.
+
+**IDs de thread consistentes**: `currentThreadId()` (thread_local) compartilha
+o contador com GuestThread::id e é gravado no TEB (ClientId.UniqueThread,
+TEB+0x24) — comparações de ownership do guest batem com o kernel.
+
+## D27 — File I/O real: NtCreateFile/Read/Write sobre a pasta SAF (2026-09-16)
+
+**Sintoma**: após o CRT, o jogo chamava `XamShowDirtyDiscErrorUI` +
+`XamLoaderLaunchTitle` (loop de relançamento) — "disco sujo".
+
+**Causa raiz 1**: `XexGetModuleSection("0D163575")` falhava. No kernel real
+essa API busca os RECURSOS nomeados do XEX (XEX_HEADER_RESOURCE_INFO —
+{char id[8]; u32 va; u32 size} × N). O FH2 carrega o recurso "0D163575"
+(VA 0x83660000, 0xD693 bytes) para verificação de mídia. Agora os recursos
+são parseados no loader e expostos (fallback: seções PE — cujos headers são
+LITTLE-ENDIAN, só o conteúdo é big-endian; confirmado com dump do .rdata).
+
+**Causa raiz 2**: `NtCreateFile/NtReadFile/...` eram stubs NOT_FOUND.
+Implementados com fd REAL: caminhos de volume ("game:\x", "D:\x",
+"\??\D:\x") → caminho relativo na pasta SAF selecionada; leitura com pread
+(zero cópia), IoStatus.Information real, evento de conclusão, EOF real,
+STATUS_OBJECT_NAME_NOT_FOUND real quando o arquivo não existe. Escritas
+(saves) em arquivos locais do app (volume do jogo é read-only, como o disco).
+
+## D28 — Modelo de memória do console: alias físico REAL via memfd (2026-09-16)
+
+**Sintoma**: SIGSEGV em 0xAF000010 — o jogo escreveu o ponteiro 0xAF000000
+(pool físico determinístico) e o acesso caiu fora do mapa guest.
+
+**Fix**: modelo REAL do Xbox 360 — RAM flat 0x80000000..0xA0000000 e ALIAS
+FÍSICO 0xA0000000..0xC0000000 (PA n ↔ 0xA0000000+n). As duas janelas mapeiam
+AS MESMAS páginas (memfd_create mapeado 2×, com fallback anônimo sem espelho
+logado). `MmAllocatePhysicalMemoryEx/Free` agora alocam da janela física real
+(0xB8000000+126 MB, PA ≥ 0x18000000 — fora dos reservados), e
+`MmQueryStatistics` devolve os números reais do modelo (512 MB, páginas
+livres). `MmGetPhysicalAddress` converte flat↔PA nas duas vistas.
+
+## D29 — FPSCR: exceções FP do guest NUNCA tramam no host (2026-09-16)
+
+**Sintoma**: SIGFPE (FPE_FLTINV) num `fdiv` com divisor 0, com MXCSR de
+fault = 0x00000020 (todas as exceções DESMASCARADAS).
+
+**Causa**: PPCFPSCRRegister mantinha um cache `csr` começando em 0 e
+`storeFromGuest/enableFlushMode/disableFlushMode` escreviam o MXCSR a partir
+desse cache — MXCSR≈0 = exceções FP desmascaradas; qualquer condição de FP
+inválido/zero do guest matava o processo. No PPC real, exceções de FP só
+setam flags do FPSCR (os jogos não habilitam interrupções de FP).
+
+**Fix**: todas as transições FPSCR leem o MXCSR REAL (`getcsr()`) e preservam
+os masks de exceção do host (bits 7-12); apenas round mode e flush-to-zero
+acompanham o guest. Corrigidas as 4 variantes (store/enable/disable ×
+unconditional). Nota: o XenonRecomp copia ppc_context.h para recomp/generated/
+— a cópia gerada precisa ser atualizada após editar a original (include com
+aspas resolve no diretório do includer).
+
+**Bônus**: divisões inteiras PPC (divw/divwu/divd/divdu) emitidas com guardas
+— divisão por zero e overflow não tramam no host (resultado determinístico,
+semântica "undefined" da arquitetura PPC); corrigido UB de `std::prev(begin())`
+na coalescência dos alocadores (crash real com threads do engine).
+
+## D30 — Boot REAL do guest completo no host (2026-09-16)
+
+Com D26–D29, o `_xstart` do FH2 executa ponta a ponta no host: CRT completo
+(>57.000 chamadas HLE, 246 critical sections, threads do engine via
+ExCreateThread), verificação de recurso/hash OK e RETORNO LIMPO da main do
+guest — sem dirty disc, sem travamento, sem crash.

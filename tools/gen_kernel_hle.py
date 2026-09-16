@@ -51,6 +51,12 @@ REAL = {
     'MmCreateKernelStack', 'MmDeleteKernelStack',
     'NtAllocateVirtualMemory', 'NtFreeVirtualMemory',
     'NtQueryVirtualMemory',
+    'NtCreateFile', 'NtOpenFile', 'NtReadFile', 'NtWriteFile',
+    'NtReadFileScatter', 'NtQueryInformationFile',
+    'NtQueryVolumeInformationFile', 'NtSetInformationFile',
+    'NtFlushBuffersFile', 'NtQueryFullAttributesFile',
+    'XexGetModuleHandle', 'XexGetModuleSection',
+    'XexCheckExecutablePrivilege', 'MmQueryStatistics',
     'NtClearEvent', 'NtClose', 'NtCreateEvent', 'NtCreateMutant',
     'NtCreateSemaphore', 'NtReleaseMutant', 'NtReleaseSemaphore',
     'NtSetEvent', 'NtSignalAndWaitForSingleObjectEx',
@@ -128,6 +134,7 @@ hdr = f'''// kernel_hle.cpp — despacho HLE dos imports de xboxkrnl.exe/xam.xex
 #include "ppc_config.h"
 #include "ppc_context.h"
 #include "runtime/ppc/kernel_real.h"
+#include "runtime/ppc/kernel_state.h"
 
 #define HLOG(...) __android_log_print(ANDROID_LOG_WARN, "FH2/HLE", __VA_ARGS__)
 

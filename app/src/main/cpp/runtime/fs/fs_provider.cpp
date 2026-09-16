@@ -3,6 +3,7 @@
 
 #include <android/log.h>
 #include <cstdio>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -188,6 +189,59 @@ bool FsProvider::writeFile(const std::string& guestPath, const std::vector<uint8
         return false;
     }
     return true;
+}
+
+int FsProvider::openFileFd(const std::string& guestPath, uint64_t& sizeOut) const {
+    if (!isSafeGuestPath(guestPath)) return -1;
+    // (1) fd DIRETO da árvore SAF — seekable, pread funciona sem cópia
+    if (!assetsUri_.empty() && openSafMethod_) {
+        int fd = openSafDirect(guestPath);
+        if (fd >= 0) {
+            struct stat st;
+            if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+                sizeOut = (uint64_t)st.st_size;
+                return fd;
+            }
+            close(fd);
+        }
+    }
+    // (2) arquivo local em filesDir (ou cópia lazy anterior)
+    std::string path;
+    if (resolvePath(guestPath, path)) {
+        int fd = open(path.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            struct stat st;
+            if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+                sizeOut = (uint64_t)st.st_size;
+                return fd;
+            }
+            close(fd);
+        }
+        // (3) provider sem openFileDescriptor: cópia lazy e reabre
+        if (!assetsUri_.empty() && copyFromSaf(guestPath)) {
+            fd = open(path.c_str(), O_RDONLY);
+            if (fd >= 0) {
+                struct stat st;
+                if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode)) {
+                    sizeOut = (uint64_t)st.st_size;
+                    return fd;
+                }
+                close(fd);
+            }
+        }
+    }
+    return -1;
+}
+
+int FsProvider::openLocalWriteFd(const std::string& guestPath) const {
+    if (!isSafeGuestPath(guestPath)) return -1;
+    std::string path;
+    if (!resolvePath(guestPath, path)) return -1;
+    // garante diretórios intermediários
+    for (size_t pos = filesDir_.size() + 1; pos < path.size(); ++pos) {
+        if (path[pos] == '/') mkdir(path.substr(0, pos).c_str(), 0755);
+    }
+    return open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
 }
 
 } // namespace fh2::fs

@@ -28,6 +28,7 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <unistd.h>
 
 #include "runtime/input/input_state.h"
 #include "runtime/ppc/kernel_state.h"
@@ -148,6 +149,7 @@ constexpr uint32_t STATUS_ACCESS_DENIED = 0xC0000022;
 constexpr uint32_t STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034;
 constexpr uint32_t STATUS_NO_MEMORY = 0xC0000017;
 constexpr uint32_t STATUS_UNSUCCESSFUL = 0xC0000001;
+constexpr uint32_t STATUS_ACCESS_VIOLATION = 0xC0000005;
 
 thread_local uint64_t t_kthreadBlock = 0; // bloco real p/ o KTHREAD opaco
 
@@ -354,16 +356,17 @@ void real_NtQueryVirtualMemory(PPCContext& ctx, uint8_t* base) {
 void real_MmAllocatePhysicalMemoryEx(PPCContext& ctx, uint8_t* base) {
     // (Flags/Type, Size, MinAddr, MaxAddr, Alignment, Tag) — 6 args:
     // r3=tipo, r4=tamanho, r5=min, r6=max, r7=ALINHAMENTO, r8=tag.
-    // Alinhamento real (r7) com clamp sano — tag (r8) NÃO é alinhamento.
+    // ALOCAÇÃO FÍSICA REAL: páginas da janela física (alias 0xA0000000+,
+    // espelho das páginas RAM flat). Alinhamento real (r7) com clamp sano.
     const uint64_t size = ctx.r4.u64;
     uint64_t align = ctx.r7.u64;
     if (align < 0x1000) align = 0x1000;             // páginas 4k no mínimo
     if (align > 0x1000000) align = 0x1000000;       // sanity: 16 MB max
-    const uint64_t addr = virtWindow().alloc((size + align - 1) & ~(align - 1));
+    const uint64_t addr = physWindow().alloc((size + align - 1) & ~(align - 1));
     ctx.r3.u64 = addr;
     if (!addr) {
         RLOG("MmAllocatePhysicalMemoryEx(type=%u size=%llu min=%08X max=%08X "
-             "align=%llu tag=%08X) = NULL (janela cheia?)",
+             "align=%llu tag=%08X) = NULL (janela física cheia?)",
              (unsigned)ctx.r3.u32, (unsigned long long)size,
              (unsigned)ctx.r5.u32, (unsigned)ctx.r6.u32,
              (unsigned long long)align, (unsigned)ctx.r8.u32);
@@ -371,18 +374,46 @@ void real_MmAllocatePhysicalMemoryEx(PPCContext& ctx, uint8_t* base) {
 }
 
 void real_MmFreePhysicalMemory(PPCContext& ctx, uint8_t* base) {
-    virtWindow().free(ctx.r4.u64);
+    physWindow().free(ctx.r4.u64);
 }
 
 void real_MmGetPhysicalAddress(PPCContext& ctx, uint8_t* base) {
-    // Identidade: VA guest == "físico" guest (nosso modelo de memória)
-    ctx.r3.u64 = ctx.r3.u64;
+    // (PVOID VirtualAddress) → PHYSICAL_ADDRESS: PA = VA - base da vista.
+    // Flat 0x80000000+n e alias 0xA0000000+n referem-se ao mesmo PA n.
+    const uint64_t va = ctx.r3.u32;
+    if (va >= 0x80000000ull && va < 0xA0000000ull) {
+        ctx.r3.u64 = va - 0x80000000ull;
+    } else if (va >= 0xA0000000ull && va < 0xC0000000ull) {
+        ctx.r3.u64 = va - 0xA0000000ull;
+    } else {
+        ctx.r3.u64 = 0;
+    }
 }
 
 void real_MmQueryAllocationSize(PPCContext& ctx, uint8_t* base) {
     const uint64_t addr = ctx.r3.u64;
     const uint64_t sz = virtWindow().blockSize(addr);
     ctx.r3.u64 = sz;
+}
+
+void real_MmQueryStatistics(PPCContext& ctx, uint8_t* base) {
+    // (PMM_STATISTICS Statistics) — números REAIS do modelo de memória:
+    // 512 MB de RAM (janelas flat/física espelhadas) + páginas livres reais.
+    const uint64_t pStats = ctx.r3.u32;
+    if (validGuest(pStats, 4)) {
+        const uint32_t length = g32(base, pStats);
+        // MM_STATISTICS: {Length, TotalPhysicalPages, AvailablePhysicalPages,
+        //  TotalVirtualBytes, AvailableVirtualBytes, ...}
+        const uint32_t totalPages = 0x20000000u >> 12; // 512 MB / 4k
+        const uint64_t physFree = physWindow().size() - physWindow().used();
+        w32(base, pStats + 4, totalPages);
+        if (length >= 8) w32(base, pStats + 8, (uint32_t)(physFree >> 12));
+        if (length >= 0x18) {
+            w32(base, pStats + 0x10, 0x20000000u);   // TotalVirtualBytes
+            w32(base, pStats + 0x14, (uint32_t)physFree); // AvailableVirtual
+        }
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
 }
 
 void real_MmCreateKernelStack(PPCContext& ctx, uint8_t* base) {
@@ -601,55 +632,145 @@ void real_NtSignalAndWaitForSingleObjectEx(PPCContext& ctx, uint8_t* base) {
 }
 
 void real_NtClose(PPCContext& ctx, uint8_t* base) {
-    closeHandle((uint32_t)ctx.r3.u64);
+    // handles Nt podem referenciar waitables OU arquivos abertos
+    const uint32_t handle = ctx.r3.u32;
+    if (handle >= 0x60000000u && handle < 0x70000000u) {
+        fileClose(handle);
+    } else {
+        closeHandle(handle);
+    }
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
 // ----------------------------------------------------- critical sections
+//
+// SEMÂNTICA REAL do kernel do Xbox 360: RTL_CRITICAL_SECTION é uma estrutura
+// de 0x18 bytes EM MEMÓRIA GUEST (não é objeto de kernel). Layout extraído do
+// binário do FH2 (critsec estática em 0x833DB4E0, confirmada com dump):
+//   +0x00 flags (0x01000400)        +0x04 unused
+//   +0x08 lista de espera Flink     +0x0C lista de espera Blink
+//        (vazia = aponta para si mesma)
+//   +0x10 lock_count (s32; -1 = livre, >=0 = travado + nº de waiters)
+//   +0x14 owning_thread (id do kernel da thread dona; 0 = nenhuma)
+//
+// Enter/Leave/TryEnter operam sobre esses campos com a MESMA semântica do
+// ntdll (InterlockedIncrement/CAS): funciona para critsecs estáticas da
+// imagem (já nascem livres no .data), critsecs em heap (RtlInitialize...),
+// reentrância e contenção entre threads guest.
+
+// Leitura/escrita dos campos (big-endian) — chamadas SEMPRE sob waitMutex().
+inline int32_t critsecLock(uint8_t* base, uint64_t cs) {
+    return (int32_t)g32(base, cs + 0x10);
+}
+inline uint32_t critsecOwner(uint8_t* base, uint64_t cs) {
+    return g32(base, cs + 0x14);
+}
+inline void critsecSetLock(uint8_t* base, uint64_t cs, int32_t v) {
+    w32(base, cs + 0x10, (uint32_t)v);
+}
+inline void critsecSetOwner(uint8_t* base, uint64_t cs, uint32_t v) {
+    w32(base, cs + 0x14, v);
+}
 
 void real_RtlInitializeCriticalSection(PPCContext& ctx, uint8_t* base) {
-    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Mutant);
-    if (w) {
-        std::lock_guard<std::mutex> lk(waitMutex());
-        w->signaled = true; // livre
-        w->kind = WaitKind::Mutant;
+    // Endereços guest chegam sign-extendidos (lis/addi do PPC) — o kernel
+    // real opera em 32 bits: mascarar ANTES de usar.
+    const uint64_t cs = ctx.r3.u32;
+    if (validGuest(cs, 0x18)) {
+        // Estado inicial IDÊNTICO ao das critsecs estáticas da imagem:
+        // flags 0x01000400, lista vazia apontando para si, lock_count -1.
+        w32(base, cs + 0x00, 0x01000400);
+        w32(base, cs + 0x04, 0);
+        w32(base, cs + 0x08, (uint32_t)(cs + 8));
+        w32(base, cs + 0x0C, (uint32_t)(cs + 8));
+        critsecSetLock(base, cs, -1);
+        critsecSetOwner(base, cs, 0);
     }
     ctx.r3.u32 = STATUS_SUCCESS;
 }
 
 void real_RtlInitializeCriticalSectionAndSpinCount(PPCContext& ctx, uint8_t* base) {
+    // (PRTL_CRITICAL_SECTION, ULONG SpinCount): inicialização idêntica; o
+    // spin é um detalhe de implementação do kernel real (nosso protocolo é
+    // cv-based) — a semântica externa observável é a mesma.
     real_RtlInitializeCriticalSection(ctx, base);
 }
 
 void real_RtlEnterCriticalSection(PPCContext& ctx, uint8_t* base) {
-    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Mutant);
-    if (w) {
-        Waitable* objs[1] = {w};
-        for (;;) {
-            const uint32_t r = waitForMultiple(objs, 1, true, -1, false);
-            if (stopRequested()) {
-                jmp_buf* env = unwindTarget();
-                if (env) longjmp(*env, 1);
-                break; // stop sem alvo de unwind: não trava o encerramento
-            }
-            // mutex: sinalizado → consumir (autoReset faz o papel de acquire)
-            if (r == kWaitSignaled0) break;
+    const uint64_t cs = ctx.r3.u32; // 32-bit: endereços vêm sign-extendidos
+    if (!validGuest(cs, 0x18)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    const uint32_t self = currentThreadId();
+    std::unique_lock<std::mutex> lk(waitMutex());
+    for (;;) {
+        const int32_t lock = critsecLock(base, cs);
+        if (lock < 0) {
+            // livre → adquire (fast path do kernel real: -1 → 0)
+            critsecSetLock(base, cs, 0);
+            critsecSetOwner(base, cs, self);
+            return;
+        }
+        if (self != 0 && critsecOwner(base, cs) == self) {
+            // reentrância: profundidade implícita no lock_count
+            critsecSetLock(base, cs, lock + 1);
+            return;
+        }
+        // contenção: espera o Leave notificar (cv do kernel). O predicate
+        // relê a memória do guest a cada avaliação — sem wakeup perdido.
+        waitCv().wait(lk, [&] {
+            return critsecLock(base, cs) < 0 ||
+                   (self != 0 && critsecOwner(base, cs) == self) ||
+                   stopRequested();
+        });
+        if (stopRequested()) {
+            lk.unlock();
+            jmp_buf* env = unwindTarget();
+            if (env) longjmp(*env, 1);
+            return; // stop sem alvo de unwind: não trava o encerramento
         }
     }
 }
 
 void real_RtlLeaveCriticalSection(PPCContext& ctx, uint8_t* base) {
-    setEvent(waitable(ctx.r3.u64, true, WaitKind::Mutant));
+    const uint64_t cs = ctx.r3.u32; // 32-bit: endereços vêm sign-extendidos
+    if (!validGuest(cs, 0x18)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(waitMutex());
+        const int32_t lock = critsecLock(base, cs);
+        if (lock > 0) {
+            // soltando um nível de reentrância
+            critsecSetLock(base, cs, lock - 1);
+        } else {
+            // soltando de vez: -1 → 0... (0 → -1) e acorda UM esperando
+            critsecSetOwner(base, cs, 0);
+            critsecSetLock(base, cs, -1);
+        }
+    }
+    waitCv().notify_all();
+    ctx.r3.u32 = STATUS_SUCCESS;
 }
 
 void real_RtlTryEnterCriticalSection(PPCContext& ctx, uint8_t* base) {
-    Waitable* w = waitable(ctx.r3.u64, true, WaitKind::Mutant);
-    ctx.r3.u32 = 0;
-    if (!w) return;
+    const uint64_t cs = ctx.r3.u32; // 32-bit: endereços vêm sign-extendidos
+    ctx.r3.u32 = 0; // FALSE
+    if (!validGuest(cs, 0x18)) return;
+    const uint32_t self = currentThreadId();
     std::lock_guard<std::mutex> lk(waitMutex());
-    if (w->signaled) {
-        w->signaled = false;
-        ctx.r3.u32 = 1;
+    const int32_t lock = critsecLock(base, cs);
+    if (lock < 0) {
+        critsecSetLock(base, cs, 0);
+        critsecSetOwner(base, cs, self);
+        ctx.r3.u32 = 1; // TRUE
+        return;
+    }
+    if (self != 0 && critsecOwner(base, cs) == self) {
+        critsecSetLock(base, cs, lock + 1);
+        ctx.r3.u32 = 1; // TRUE
     }
 }
 
@@ -1165,6 +1286,493 @@ void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
 
 void real_XamUserGetSigninState(PPCContext& ctx, uint8_t* base) {
     ctx.r3.u32 = 0; // sem perfil assinado (estado real v1: offline)
+}
+
+// ------------------------------------------------- módulos XEX
+//
+// No kernel real, o HANDLE de um módulo carregado é a base do header XEX
+// (0x82000000 para o executável do título). XexGetModuleSection anda pelos
+// section headers PE da imagem carregada e devolve (endereço, tamanho) da
+// seção pedida — exatamente o que o CRT do título usa para localizar
+// .pdata/.xdata/.tls e registrar exceptions/TLS.
+
+inline uint32_t g16(uint8_t* b, uint64_t a) {
+    return (uint32_t(b[a]) << 8) | b[a + 1];
+}
+// PE headers são LITTLE-ENDIAN (formato MS padrão) mesmo em imagens PPC
+// big-endian — somente o CONTEÚDO das seções é big-endian. Confirmado no
+// FH2: .rdata VA=0x400 size=0x36C030 em LE bate com Image::ParseImage.
+inline uint32_t pe32(uint8_t* b, uint64_t a) {
+    return (uint32_t)b[a] | ((uint32_t)b[a + 1] << 8) |
+           ((uint32_t)b[a + 2] << 16) | ((uint32_t)b[a + 3] << 24);
+}
+inline uint32_t pe16(uint8_t* b, uint64_t a) {
+    return (uint32_t)b[a] | ((uint32_t)b[a + 1] << 8);
+}
+
+// Localiza uma seção PE pelo nome (8 bytes, null-padded) na imagem guest.
+static bool peFindSection(uint8_t* base, uint32_t hModule,
+                          const std::string& name, uint32_t& outVa,
+                          uint32_t& outSize) {
+    if (!validGuest(hModule + 0x3C, 4)) return false;
+    const uint32_t eLfanew = pe32(base, hModule + 0x3C);
+    const uint32_t nt = hModule + eLfanew;
+    if (!validGuest(nt, 24)) return false;
+    if (pe32(base, nt) != 0x00004550u) return false; // 'PE\0\0' (LE)
+    const uint32_t numSections = pe16(base, nt + 6);
+    const uint32_t optSize = pe16(base, nt + 20);
+    const uint32_t sections = nt + 4 + 20 + optSize;
+    if (numSections > 96 || !validGuest(sections, size_t(numSections) * 40))
+        return false;
+    for (uint32_t i = 0; i < numSections; ++i) {
+        const uint32_t sh = sections + i * 40;
+        char secName[9];
+        for (int c = 0; c < 8; ++c) secName[c] = (char)base[sh + c];
+        secName[8] = 0;
+        const size_t nl = name.size();
+        const bool match = nl <= 8 && nl > 0 &&
+                           memcmp(secName, name.c_str(), nl) == 0 &&
+                           (nl == 8 || secName[nl] == 0);
+        if (match) {
+            outSize = pe32(base, sh + 8);   // VirtualSize (LE)
+            outVa = pe32(base, sh + 12);    // VirtualAddress (LE)
+            return true;
+        }
+    }
+    return false;
+}
+
+void real_XexGetModuleHandle(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE hModule /*0 = executável atual*/, PHANDLE pOut)
+    const uint32_t hIn = ctx.r3.u32;
+    uint64_t pOut = ctx.r4.u32;
+    if (!validGuest(pOut, 4)) pOut = ctx.r3.u32; // variante de 1 argumento
+    if (!validGuest(pOut, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // handle real = base da imagem do módulo (0 para o título)
+    const uint32_t handle = imageBase();
+    w32(base, pOut, handle);
+    ctx.r3.u32 = STATUS_SUCCESS;
+    static Throttle t;
+    if (t.shouldLog(4, 512)) {
+        RLOG("XexGetModuleHandle(hIn=0x%08X) = 0x%08X", hIn, handle);
+    }
+}
+
+void real_XexGetModuleSection(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE hModule, LPCSTR pszName, PVOID* ppAddress, PDWORD pcbSize)
+    // Semântica real: busca PRIMEIRO nos recursos nomeados do XEX
+    // (XEX_HEADER_RESOURCE_INFO — "0D163575" no FH2), depois nas seções PE.
+    const uint32_t hModule = ctx.r3.u32 ? ctx.r3.u32 : imageBase();
+    const std::string name = readGuestCString(ctx.r4.u32, 8);
+    const uint64_t ppAddr = ctx.r5.u32;
+    const uint64_t pSize = ctx.r6.u32;
+    if (name.empty() || !validGuest(ppAddr, 4) || !validGuest(pSize, 4)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    // (1) recursos do XEX
+    const KernelResource* res = findImageResource(name.c_str());
+    if (res) {
+        w32(base, ppAddr, res->va);
+        w32(base, pSize, res->size);
+        ctx.r3.u32 = STATUS_SUCCESS;
+        RLOG("XexGetModuleSection('%s') = recurso 0x%08X (%u bytes)",
+             name.c_str(), res->va, res->size);
+        return;
+    }
+    // (2) seções PE da imagem
+    uint32_t va = 0, size = 0;
+    if (peFindSection(base, hModule, name, va, size)) {
+        w32(base, ppAddr, hModule + va);
+        w32(base, pSize, size);
+        ctx.r3.u32 = STATUS_SUCCESS;
+        RLOG("XexGetModuleSection('%s') = seção 0x%08X (%u bytes)",
+             name.c_str(), hModule + va, size);
+        return;
+    }
+    RLOG("XexGetModuleSection: '%s' não existe no módulo 0x%08X", name.c_str(),
+         hModule);
+    ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+void real_XexCheckExecutablePrivilege(PPCContext& ctx, uint8_t* base) {
+    // BOOL XexCheckExecutablePrivilege(DWORD privilege) — consulta REAL do
+    // executive_flags do XEX carregado (0xFF00000100FF02FF no FH2).
+    const uint32_t priv = ctx.r3.u32;
+    ctx.r3.u32 = (imagePrivileges() & priv) ? 1 : 0;
+}
+
+// ------------------------------------------------- arquivos (Nt*)
+
+// Converte um caminho de volume do 360 ("game:\x", "D:\x", "\??\D:\x") para
+// o caminho RELATIVO dentro da pasta selecionada pelo usuário. O root da
+// árvore SAF é o volume: "game:\media\foo.bar" → "media/foo.bar".
+static std::string normalizeGuestPath(const std::string& in) {
+    std::string p = in;
+    // prefixos de namespace NT
+    for (const char* pre : {"\\??\\", "\\Device\\"}) {
+        const size_t n = strlen(pre);
+        if (p.size() > n && strncasecmp(p.c_str(), pre, n) == 0) p = p.substr(n);
+    }
+    // volumes conhecidos: game:, d:, cdrom0 — ambos "game:\x" e "game:/x"
+    for (const char* vol : {"game:", "d:", "cdrom0:"}) {
+        const size_t n = strlen(vol);
+        if (p.size() > n && strncasecmp(p.c_str(), vol, n) == 0 &&
+            (p[n] == '\\' || p[n] == '/')) {
+            p = p.substr(n + 1);
+            break;
+        }
+    }
+    for (char& c : p)
+        if (c == '\\') c = '/';
+    // componentes vazios fora
+    std::string out;
+    size_t start = 0;
+    while (start < p.size()) {
+        size_t end = p.find('/', start);
+        std::string part = p.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (!part.empty() && part != ".") {
+            if (part == "..") return {}; // traversal — caminho inválido
+            if (!out.empty()) out += '/';
+            out += part;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return out;
+}
+
+// Lê UNICODE_STRING do guest (UTF-16 big-endian) — campo ObjectName de
+// OBJECT_ATTRIBUTES.
+static std::string readUnicodeString(uint8_t* base, uint64_t addr) {
+    if (!validGuest(addr, 8)) return {};
+    const uint32_t len = g16(base, addr);        // bytes (não chars)
+    const uint32_t buf = g32(base, addr + 4);
+    if (len == 0 || len > 1024 || !validGuest(buf, len)) return {};
+    std::string out;
+    out.reserve(len / 2);
+    for (uint32_t i = 0; i + 1 < len; i += 2) {
+        const uint16_t wc = (uint16_t)(base[buf + i] << 8) | base[buf + i + 1];
+        if (wc == 0) break;
+        out.push_back(wc < 0x80 ? (char)wc : '?'); // caminhos do jogo são ASCII
+    }
+    return out;
+}
+
+// Extrai o caminho de OBJECT_ATTRIBUTES (r5): {len, rootDir, pName, attr,...}
+static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr) {
+    if (!validGuest(objAttr, 24)) return {};
+    const uint32_t pName = g32(base, objAttr + 8);
+    if (!pName) return {};
+    const std::string raw = readUnicodeString(base, pName);
+    return normalizeGuestPath(raw);
+}
+
+void real_NtCreateFile(PPCContext& ctx, uint8_t* base) {
+    // (PHANDLE FileHandle, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+    //  PLARGE_INTEGER AllocationSize, ULONG FileAttributes, ULONG ShareAccess,
+    //  ULONG CreateDisposition, ULONG CreateOptions)
+    const uint64_t pHandle = ctx.r3.u32;
+    const uint64_t objAttr = ctx.r5.u32;
+    const uint64_t pIoStatus = ctx.r6.u32;
+    const uint32_t disposition = ctx.r10.u32;
+    if (!validGuest(pHandle, 4) || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    std::string display = pathFromObjectAttributes(base, objAttr);
+    std::string rel = normalizeGuestPath(display);
+    const bool write = disposition == 2 || disposition == 3 || disposition == 5;
+    // FILE_SUPERSEDE=0, CREATE_NEW=1, CREATE_ALWAYS=2, OPEN_EXISTING=3,
+    // OPEN_ALWAYS=4, TRUNCATE_EXISTING=5
+    uint32_t handle = 0;
+    if (!rel.empty()) {
+        GuestFile* f = nullptr;
+        handle = fileOpen(rel, display, write, &f);
+    }
+    if (!handle) {
+        w32(base, pIoStatus, STATUS_OBJECT_NAME_NOT_FOUND);
+        ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+        static Throttle tf;
+        if (tf.shouldLog(24, 512)) {
+            RLOG("NtCreateFile('%s') = NOT_FOUND", display.c_str());
+        }
+        return;
+    }
+    w32(base, pHandle, handle);
+    w32(base, pIoStatus, 0);            // Status = SUCCESS
+    w32(base, pIoStatus + 4, 0);        // Information = 0
+    ctx.r3.u32 = STATUS_SUCCESS;
+    static Throttle t;
+    if (t.shouldLog(24, 512)) {
+        GuestFile* f = fileGet(handle);
+        RLOG("NtCreateFile('%s') = 0x%08X (%llu bytes%s)", display.c_str(),
+             handle, (unsigned long long)(f ? f->size : 0),
+             write ? ", write" : "");
+    }
+}
+
+void real_NtOpenFile(PPCContext& ctx, uint8_t* base) {
+    // (PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+    //  ULONG ShareAccess, ULONG OpenOptions)
+    const uint64_t pHandle = ctx.r3.u32;
+    const uint64_t objAttr = ctx.r5.u32;
+    const uint64_t pIoStatus = ctx.r6.u32;
+    if (!validGuest(pHandle, 4) || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
+    const std::string display = pathFromObjectAttributes(base, objAttr);
+    const std::string rel = normalizeGuestPath(display);
+    uint32_t handle = 0;
+    if (!rel.empty()) {
+        GuestFile* f = nullptr;
+        handle = fileOpen(rel, display, false, &f);
+    }
+    if (!handle) {
+        w32(base, pIoStatus, STATUS_OBJECT_NAME_NOT_FOUND);
+        ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+        static Throttle tf;
+        if (tf.shouldLog(24, 512)) {
+            RLOG("NtOpenFile('%s') = NOT_FOUND", display.c_str());
+        }
+        return;
+    }
+    w32(base, pHandle, handle);
+    w32(base, pIoStatus, 0);
+    w32(base, pIoStatus + 4, 0);
+    ctx.r3.u32 = STATUS_SUCCESS;
+    static Throttle t;
+    if (t.shouldLog(24, 512)) {
+        GuestFile* f = fileGet(handle);
+        RLOG("NtOpenFile('%s') = 0x%08X (%llu bytes)", display.c_str(),
+             handle, (unsigned long long)(f ? f->size : 0));
+    }
+}
+
+void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, HANDLE Event, PIO_APC_ROUTINE, PVOID ApcContext,
+    //  PIO_STATUS_BLOCK, PVOID Buffer, ULONG Length,
+    //  PLARGE_INTEGER ByteOffset, PULONG Key)
+    const uint32_t handle = ctx.r3.u32;
+    const uint32_t event = ctx.r4.u32;
+    const uint64_t pIoStatus = ctx.r7.u32;
+    const uint64_t buffer = ctx.r8.u32;
+    const uint32_t length = ctx.r9.u32;
+    const uint64_t pOffset = ctx.r10.u32;
+    GuestFile* f = fileGet(handle);
+    if (!f || f->fd < 0 || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    if (length > 0 && !validGuest(buffer, 1)) {
+        ctx.r3.u32 = STATUS_ACCESS_VIOLATION;
+        return;
+    }
+    uint64_t off;
+    if (pOffset && validGuest(pOffset, 8)) {
+        off = g64(base, pOffset); // PLARGE_INTEGER (u64 BE)
+    } else {
+        off = f->pos;             // ponteiro lógico do FILE_OBJECT
+    }
+    uint32_t done = 0;
+    if (length > 0) {
+        if (off >= f->size) {
+            done = 0; // EOF real
+        } else {
+            const uint64_t want = std::min<uint64_t>(length, f->size - off);
+            ssize_t n;
+            do {
+                n = pread(f->fd, base + buffer + done, want - done,
+                          (off_t)(off + done));
+            } while (n > 0 && (done += (uint32_t)n) < want);
+            done = (uint32_t)std::min<uint64_t>(done, want);
+        }
+        f->pos = off + done;
+    }
+    w32(base, pIoStatus, 0);       // Status
+    w32(base, pIoStatus + 4, done); // Information = bytes lidos
+    ctx.r3.u32 = STATUS_SUCCESS;
+    // sinaliza evento de conclusão (I/O síncrono com evento opcional)
+    if (event) {
+        Waitable* w = waitableByHandle(event);
+        if (w) setEvent(w);
+    }
+    static Throttle t;
+    if (t.shouldLog(32, 1024)) {
+        RLOG("NtReadFile('%s' off=%llu len=%u) = %u bytes", f->display.c_str(),
+             (unsigned long long)off, length, done);
+    }
+}
+
+void real_NtQueryInformationFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, PIO_STATUS_BLOCK, PVOID FileInformation, ULONG Length,
+    //  FILE_INFORMATION_CLASS)
+    const uint32_t handle = ctx.r3.u32;
+    const uint64_t pIoStatus = ctx.r4.u32;
+    const uint64_t info = ctx.r5.u32;
+    const uint32_t length = ctx.r6.u32;
+    const uint32_t cls = ctx.r7.u32;
+    GuestFile* f = fileGet(handle);
+    if (!f || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    // FileStandardInformation = 5: {AllocSize u64, EndOfFile u64,
+    //  NumberOfLinks u32, DeletePending u8, Directory u8}
+    if (cls == 5) {
+        if (length >= 24 && validGuest(info, 24)) {
+            w64(base, info, f->size);       // AllocationSize
+            w64(base, info + 8, f->size);   // EndOfFile
+            w32(base, info + 16, 1);        // NumberOfLinks
+            base[info + 20] = 0;            // DeletePending
+            base[info + 21] = 0;            // Directory = false
+        }
+    } else if (cls == 22) { // FileNetworkOpenInformation = 22 (56 bytes)
+        if (length >= 56 && validGuest(info, 56)) {
+            const uint64_t ft = 0; // timestamps reais ficam p/ XContent
+            w64(base, info + 32, f->size);  // EndOfFile
+            w64(base, info + 40, f->size);  // AllocationSize
+            (void)ft;
+        }
+    }
+    w32(base, pIoStatus, 0);
+    w32(base, pIoStatus + 4, 0);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_NtQueryVolumeInformationFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, PIO_STATUS_BLOCK, PVOID FsInformation, ULONG Length, CLASS)
+    const uint64_t pIoStatus = ctx.r4.u32;
+    const uint64_t info = ctx.r5.u32;
+    const uint32_t length = ctx.r6.u32;
+    const uint32_t cls = ctx.r7.u32;
+    if (!validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    // FileFsSizeInformation = 3: {TotalAllocation u64, Available u64,
+    //  SectorsPerCluster u32, BytesPerSector u32} — geometria real de DVD.
+    if (cls == 3 && length >= 32 && validGuest(info, 32)) {
+        w64(base, info, (uint64_t)8589934592ull);      // 8 GB de alocação
+        w64(base, info + 8, (uint64_t)4294967296ull);  // disponível
+        w32(base, info + 16, 16);   // sectores por cluster
+        w32(base, info + 20, 2048); // bytes por sector (DVD)
+    } else if (cls == 4 && length >= 24 && validGuest(info, 24)) {
+        // FileFsVolumeInformation: {VolumeCreationTime u64, SerialNumber u32,
+        //  VolumeLabelLength u32, SupportsObjects u8, Label...}
+        w64(base, info, 0);
+        w32(base, info + 8, 0x12345678); // serial
+        w32(base, info + 12, 7);
+        base[info + 16] = 1;
+        memcpy(base + info + 17, "FH2DVD", 6);
+    }
+    w32(base, pIoStatus, 0);
+    w32(base, pIoStatus + 4, 0);
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_NtSetInformationFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, CLASS) — v1: aceita e ignora
+    // (o jogo usa p/ truncar files de save; posição EOF gravada no close).
+    const uint64_t pIoStatus = ctx.r4.u32;
+    if (validGuest(pIoStatus, 8)) {
+        w32(base, pIoStatus, 0);
+        w32(base, pIoStatus + 4, 0);
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_NtFlushBuffersFile(PPCContext& ctx, uint8_t* base) {
+    const uint64_t pIoStatus = ctx.r4.u32;
+    if (validGuest(pIoStatus, 8)) {
+        w32(base, pIoStatus, 0);
+        w32(base, pIoStatus + 4, 0);
+    }
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_NtQueryFullAttributesFile(PPCContext& ctx, uint8_t* base) {
+    // (POBJECT_ATTRIBUTES, PFILE_NETWORK_OPEN_INFORMATION)
+    const uint64_t objAttr = ctx.r3.u32;
+    const uint64_t info = ctx.r4.u32;
+    const std::string display = pathFromObjectAttributes(base, objAttr);
+    const std::string rel = normalizeGuestPath(display);
+    if (rel.empty() || !validGuest(info, 56)) {
+        ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+        return;
+    }
+    // sondagem real: abre e fecha (sem handle visível)
+    GuestFile* probe = nullptr;
+    const uint32_t h = fileOpen(rel, display, false, &probe);
+    if (!h) {
+        ctx.r3.u32 = STATUS_OBJECT_NAME_NOT_FOUND;
+        return;
+    }
+    const uint64_t size = probe->size;
+    fileClose(h);
+    memset(base + info, 0, 56);
+    w64(base, info + 32, size);  // EndOfFile
+    w64(base, info + 40, size);  // AllocationSize
+    ctx.r3.u32 = STATUS_SUCCESS;
+}
+
+void real_NtWriteFile(PPCContext& ctx, uint8_t* base) {
+    // (HANDLE, HANDLE Event, PIO_APC_ROUTINE, PVOID ApcContext,
+    //  PIO_STATUS_BLOCK, PVOID Buffer, ULONG Length,
+    //  PLARGE_INTEGER ByteOffset, PULONG Key)
+    const uint32_t handle = ctx.r3.u32;
+    const uint32_t event = ctx.r4.u32;
+    const uint64_t pIoStatus = ctx.r7.u32;
+    const uint64_t buffer = ctx.r8.u32;
+    const uint32_t length = ctx.r9.u32;
+    const uint64_t pOffset = ctx.r10.u32;
+    GuestFile* f = fileGet(handle);
+    if (!f || f->fd < 0 || !validGuest(pIoStatus, 8)) {
+        ctx.r3.u32 = STATUS_INVALID_HANDLE;
+        return;
+    }
+    if (!f->write) {
+        // volume do jogo é read-only no kernel real (disco)
+        ctx.r3.u32 = STATUS_ACCESS_DENIED;
+        return;
+    }
+    if (length > 0 && !validGuest(buffer, 1)) {
+        ctx.r3.u32 = STATUS_ACCESS_VIOLATION;
+        return;
+    }
+    uint64_t off;
+    if (pOffset && validGuest(pOffset, 8)) {
+        off = g64(base, pOffset);
+    } else {
+        off = f->pos;
+    }
+    uint32_t done = 0;
+    if (length > 0) {
+        ssize_t n;
+        do {
+            n = pwrite(f->fd, base + buffer + done, length - done,
+                       (off_t)(off + done));
+        } while (n > 0 && (done += (uint32_t)n) < length);
+        if (off + done > f->size) f->size = off + done;
+        f->pos = off + done;
+    }
+    w32(base, pIoStatus, 0);
+    w32(base, pIoStatus + 4, done);
+    ctx.r3.u32 = STATUS_SUCCESS;
+    if (event) {
+        Waitable* w = waitableByHandle(event);
+        if (w) setEvent(w);
+    }
+}
+
+void real_NtReadFileScatter(PPCContext& ctx, uint8_t* base) {
+    // Semântica real: o scatter do 360 lê páginas em segmentos — para o
+    // kernel HLE, o caminho de dados é o mesmo do NtReadFile.
+    real_NtReadFile(ctx, base);
 }
 
 // ------------------------------------------------------------- rastreio

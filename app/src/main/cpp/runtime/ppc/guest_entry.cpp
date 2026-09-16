@@ -49,27 +49,35 @@ PPCFunc* lookup(uint32_t addr) {
 }
 
 // ----------------------------------------------------------------------
-// TLS: aloca um bloco por thread, copia a imagem de inicialização do XEX
-// (tlsDataStart..tlsRawDataEnd), zera até tlsDataEnd e registra o base em
-// tlsBaseAddr (variável do CRT guest). r13 = base do bloco.
-uint64_t setupTls(uint8_t* base, const XexImageInfo& img) {
-    if (img.tlsBytes == 0) return 0;
-    const uint64_t block = kern::heap().alloc(img.tlsBytes, 32);
+// TEB + TLS do módulo: no Xenon, r13 aponta para o TEB da thread (SEMPRE
+// válido — o kernel o aloca na criação) e a imagem TLS do módulo é anexada
+// após a área de sistema. O template vive na imagem (tlsBaseAddr, VA) com
+// tlsDataSize bytes inicializados e zero-init até tlsTotalSize.
+// Campos de sistema gravados pelo kernel real e reproduzidos aqui:
+//   +0x20 ClientId.UniqueProcess (titleId)   +0x24 ClientId.UniqueThread
+//   +0x28 StackBase (topo)                   +0x2C StackLimit (base)
+uint64_t setupTls(uint8_t* base, const XexImageInfo& img,
+                  uint32_t threadId, uint64_t stackTop, uint64_t stackLimit) {
+    constexpr uint32_t kTebSystemSize = 0x1000;
+    const uint32_t tlsTotal = (img.tlsTotalSize + 31u) & ~31u;
+    const uint32_t blockSize = kTebSystemSize + tlsTotal;
+    const uint64_t block = kern::heap().alloc(blockSize, 32);
     if (!block) {
-        GLOG("TLS: heap esgotado (%u bytes) — r13 = 0", img.tlsBytes);
+        GLOG("TEB/TLS: heap esgotado (%u bytes) — r13 = 0", blockSize);
         return 0;
     }
     uint8_t* host = base + block;
-    memset(host, 0, img.tlsBytes);
-    const uint64_t rawStart = img.tlsDataStart;
-    const uint64_t rawEnd = img.tlsRawDataEnd;
-    if (rawEnd > rawStart && rawStart >= PPC_IMAGE_BASE &&
-        rawEnd <= PPC_IMAGE_BASE + PPC_IMAGE_SIZE) {
-        memcpy(host, base + rawStart, rawEnd - rawStart);
+    memset(host, 0, blockSize);
+    // template TLS inicializado (dados vivos na imagem carregada)
+    if (img.tlsDataSize && img.tlsBaseAddr >= PPC_IMAGE_BASE &&
+        img.tlsBaseAddr + img.tlsDataSize <= PPC_IMAGE_BASE + PPC_IMAGE_SIZE) {
+        memcpy(host + kTebSystemSize, base + img.tlsBaseAddr, img.tlsDataSize);
     }
-    if (img.tlsBaseAddr) {
-        *(uint32_t*)(base + img.tlsBaseAddr) = __builtin_bswap32((uint32_t)block);
-    }
+    // campos de sistema do TEB (mesmos valores que o kernel real grava)
+    *(uint32_t*)(host + 0x20) = __builtin_bswap32(kern::currentTitleId());
+    *(uint32_t*)(host + 0x24) = __builtin_bswap32(threadId);
+    *(uint32_t*)(host + 0x28) = __builtin_bswap32((uint32_t)stackTop);
+    *(uint32_t*)(host + 0x2C) = __builtin_bswap32((uint32_t)stackLimit);
     return block;
 }
 
@@ -109,6 +117,11 @@ void guestThreadBody(kern::GuestThread& t, uint8_t* base,
     PPCContext ctx{};
     ctx.msr = 0x200A000;
 
+    // Identidade da thread no kernel (ClientId.UniqueThread) — deve bater com
+    // o TEB+0x24 gravado abaixo, para que comparações de ownership de
+    // critical sections do guest sejam idênticas às do kernel real.
+    kern::setHostThreadId(t.id);
+
     // Stack própria (janela virtual do kernel guest)
     const uint64_t stackSize = t.stackSize ? t.stackSize : 0x40000;
     t.stackGuest = kern::virtWindow().alloc(stackSize + 0x10000);
@@ -118,13 +131,15 @@ void guestThreadBody(kern::GuestThread& t, uint8_t* base,
         return;
     }
     ctx.r1.u64 = (t.stackGuest + stackSize) & ~0xFull; // topo, 16-alinhado
-    GLOG("thread %u: start=0x%08llX ctx=0x%08llX stack=0x%08llX+%lluk",
-         t.handle, (unsigned long long)t.startRoutine,
+    GLOG("thread %u (id=%u): start=0x%08llX ctx=0x%08llX stack=0x%08llX+%lluk",
+         t.handle, t.id, (unsigned long long)t.startRoutine,
          (unsigned long long)t.startContext,
          (unsigned long long)t.stackGuest,
          (unsigned long long)(stackSize >> 10));
 
-    ctx.r13.u64 = setupTls(base, img);
+    ctx.r13.u64 = setupTls(base, img, t.id,
+                           (t.stackGuest + stackSize) & ~0xFull,
+                           t.stackGuest);
 
     PPCFunc* fn = lookup((uint32_t)t.startRoutine);
     if (!fn) {
@@ -162,6 +177,7 @@ void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
                   std::atomic<bool>& stopRequested) {
     PPCContext ctx{};
     ctx.msr = 0x200A000;
+    kern::setHostThreadId(1); // thread principal do título = kernel id 1
 
     // Stack da thread principal: 16 MB na janela virtual
     const uint64_t kMainStackSize = 0x1000000ull;
@@ -171,15 +187,15 @@ void runGuestMain(uint32_t entryAddr, uint8_t* base, const XexImageInfo& img,
         return;
     }
     ctx.r1.u64 = (stack + kMainStackSize - 0x1000) & ~0xFull;
-    GLOG("entry 0x%08X: stack 0x%08llX..0x%08llX, %u bytes de TLS",
+    const uint64_t stackTop = ctx.r1.u64;
+    GLOG("entry 0x%08X: stack 0x%08llX..0x%08llX, %u bytes de TLS (template)",
          entryAddr, (unsigned long long)stack,
-         (unsigned long long)(stack + kMainStackSize), img.tlsBytes);
+         (unsigned long long)(stack + kMainStackSize), img.tlsTotalSize);
 
-    ctx.r13.u64 = setupTls(base, img);
+    ctx.r13.u64 = setupTls(base, img, /*threadId=*/1, stackTop, stack);
     if (ctx.r13.u64) {
-        GLOG("TLS principal: r13=0x%08llX (%u bytes, dados 0x%08X..0x%08X)",
-             (unsigned long long)ctx.r13.u64, img.tlsBytes, img.tlsDataStart,
-             img.tlsRawDataEnd);
+        GLOG("TEB principal: r13=0x%08llX (%u bytes, id=1)",
+             (unsigned long long)ctx.r13.u64, 0x1000 + img.tlsTotalSize);
     }
 
     PPCFunc* entry = lookup(entryAddr);

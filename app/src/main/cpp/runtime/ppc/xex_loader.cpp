@@ -32,56 +32,82 @@ inline uint32_t be32(const uint8_t* p) {
 }
 
 /** Percorre os cabeçalhos opcionais do XEX2 (área NÃO encriptada) e extrai
- *  TLS / stack / heap / title id — os metadados de que o runtime precisa
- *  para preparar threads guest de verdade. */
+ *  TLS / stack / heap / title id / privilégios — os metadados de que o
+ *  runtime precisa para preparar threads guest de verdade.
+ *
+ *  Walk IDÊNTICO ao do XenonUtils (getOptHeaderPtr): array flat de
+ *  {key u32, value u32} a partir de 0x18, headerCount entradas. O tipo é
+ *  dado pelo byte baixo da key:
+ *    key & 0xFF == 0x00 → value É o dado (u32 inline)
+ *    key & 0xFF == 0x01 → value é o dado (u32 inline, ponteiro)
+ *    demais (0x04, 0xFF, …) → value é OFFSET no arquivo do corpo */
 void parseOptionalHeaders(const uint8_t* data, size_t size, XexImageInfo& out) {
     if (size < 0x18) return;
     const uint32_t headerCount = be32(data + 0x14);
     const uint8_t* opt = data + 0x18;
-    const size_t avail = size - 0x18;
-    size_t off = 0;
-    for (uint32_t i = 0; i < headerCount && off + 8 <= avail; ++i) {
+    for (uint32_t i = 0; i < headerCount; ++i) {
+        const size_t off = size_t(i) * 8;
+        if (off + 8 > size - 0x18) break;
         const uint32_t key = be32(opt + off);
         const uint32_t val = be32(opt + off + 4);
-        const size_t body = off + 8;
+        const uint8_t* body = nullptr;
+        switch (key & 0xFF) {
+        case 0x00:
+        case 0x01:
+            body = opt + off + 4; // inline (aponta para o próprio value)
+            break;
+        default:
+            if (size_t(val) + 32 <= size) body = data + val; // offset no arquivo
+            break;
+        }
+        if (!body) continue;
         switch (key) {
-        case 0x00020104: { // XEX_HEADER_TLS_INFO → val = offset do corpo
-            if (val + 32 <= size) {
-                const uint8_t* t = data + val;
-                out.tlsNumberOfSlots = be32(t);
-                out.tlsSlotSize = be32(t + 4);
-                out.tlsBytes = be32(t + 8);
-                out.tlsDataStart = be32(t + 12);
-                out.tlsRawDataEnd = be32(t + 16);
-                out.tlsDataEnd = be32(t + 20);
-                out.tlsIndexAddr = be32(t + 24);
-                out.tlsBaseAddr = be32(t + 28);
+        case 0x000002FF: { // XEX_HEADER_RESOURCE_INFO (corpo: len u32 + N×16)
+            // {u32 bytes} {char id[8]; u32 va; u32 size} × N — os recursos
+            // que o kernel expõe via XexGetModuleSection.
+            if (size_t(val) + 4 <= size) {
+                const uint32_t bodyLen = be32(body);
+                const int count = bodyLen >= 4 ? (int)((bodyLen - 4) / 16) : 0;
+                for (int r = 0; r < count && size_t(val) + 4 + size_t(r + 1) * 16 <= size; ++r) {
+                    const uint8_t* e = body + 4 + r * 16;
+                    XexImageInfo::Resource res{};
+                    for (int c = 0; c < 8; ++c) {
+                        const char ch = (char)e[c];
+                        res.id[c] = (ch >= 32 && ch < 127) ? ch : 0;
+                    }
+                    res.id[8] = 0;
+                    res.va = be32(e + 8);
+                    res.size = be32(e + 12);
+                    if (res.id[0] && res.size) out.resources.push_back(res);
+                }
             }
             break;
         }
-        case 0x00020200: // XEX_HEADER_DEFAULT_STACK_SIZE (valor inline)
+        case 0x00020104: { // XEX_HEADER_TLS_INFO (16 bytes, por offset)
+            // slots | VA do template na imagem | size init | size total
+            out.tlsNumberOfSlots = be32(body);
+            out.tlsBaseAddr = be32(body + 4);
+            out.tlsDataSize = be32(body + 8);
+            out.tlsTotalSize = be32(body + 12);
+            break;
+        }
+        case 0x00020200: // XEX_HEADER_DEFAULT_STACK_SIZE (inline)
             out.defaultStackSize = val;
             break;
-        case 0x00020401: // XEX_HEADER_DEFAULT_HEAP_SIZE (valor inline)
+        case 0x00020401: // XEX_HEADER_DEFAULT_HEAP_SIZE (inline)
             out.defaultHeapSize = val;
             break;
-        case 0x00040006: { // XEX_HEADER_EXECUTION_INFO → offset do corpo
-            if (val + 0x14 <= size) {
-                // MediaID[0x10] e então TitleID (BE)
+        case 0x00040006: { // XEX_HEADER_EXECUTION_INFO (por offset)
+            // mediaID[0x10] | titleID u32 | launcher u32 | privileges u64
+            if (size_t(val) + 0x20 <= size) {
                 out.titleId = be32(data + val + 0x10);
+                out.privileges = (uint64_t(be32(data + val + 0x18)) << 32) |
+                                 be32(data + val + 0x1C);
             }
             break;
         }
         default:
             break;
-        }
-        // tamanho do corpo: chaves ≥ 0x0000FF00 carregam length no 1º u32
-        if (key >= 0x0000FF00) {
-            if (body + 4 > avail) break;
-            const uint32_t len = be32(opt + body);
-            off = body + 4 + len;
-        } else {
-            off = body;
         }
     }
 }
@@ -143,12 +169,14 @@ bool loadXexImage(fs::FsProvider& fs, uint8_t* guestMem, size_t guestMemBytes,
     parseOptionalHeaders(fileData.data(), fileData.size(), out);
     __android_log_print(ANDROID_LOG_INFO, "FH2/XEX",
                         "default.xex decodificado: base=0x%08X entry=0x%08X "
-                        "size=%u bytes titleId=0x%08X stack=%u heap=%u "
-                        "TLS=%u bytes (slots=%u x %u, data=0x%08X..0x%08X)",
+                        "size=%u bytes titleId=0x%08X privileges=%016llX "
+                        "stack=%u heap=%u TLS=%u bytes (slots=%u, template "
+                        "0x%08X)",
                         out.base, out.entryPoint, out.imageSize, out.titleId,
+                        (unsigned long long)out.privileges,
                         out.defaultStackSize, out.defaultHeapSize,
-                        out.tlsBytes, out.tlsNumberOfSlots, out.tlsSlotSize,
-                        out.tlsDataStart, out.tlsDataEnd);
+                        out.tlsTotalSize, out.tlsNumberOfSlots,
+                        out.tlsBaseAddr);
     return true;
 }
 

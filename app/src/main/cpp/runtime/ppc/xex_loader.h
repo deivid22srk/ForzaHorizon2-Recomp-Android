@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace fh2::fs {
 class FsProvider;
@@ -26,17 +27,24 @@ struct XexImageInfo {
     uint32_t entryPoint = 0;  // entry point (FH2: 0x82BF2CD0)
     uint32_t imageSize = 0;   // bytes da imagem decodificada
     uint32_t titleId = 0;     // XEX_HEADER_EXECUTION_INFO
+    uint64_t privileges = 0;  // XEX_HEADER_EXECUTION_INFO executive_flags
     uint32_t defaultStackSize = 0; // XEX_HEADER_DEFAULT_STACK_SIZE
     uint32_t defaultHeapSize = 0;  // XEX_HEADER_DEFAULT_HEAP_SIZE
-    // XEX_HEADER_TLS_INFO (copiado para cada thread guest; r13 = base)
-    uint32_t tlsNumberOfSlots = 0;
-    uint32_t tlsSlotSize = 0;
-    uint32_t tlsBytes = 0;        // numberOfBytes (bloco por thread)
-    uint32_t tlsDataStart = 0;    // VA do template de init (na imagem)
-    uint32_t tlsRawDataEnd = 0;
-    uint32_t tlsDataEnd = 0;
-    uint32_t tlsIndexAddr = 0;
-    uint32_t tlsBaseAddr = 0;     // VA da variável base do CRT
+    // XEX_HEADER_TLS_INFO (Xenon: r13 = TEB; imagem TLS anexada ao TEB)
+    uint32_t tlsNumberOfSlots = 0; // nº de slots
+    uint32_t tlsBaseAddr = 0;      // VA do template/index do TLS (imagem)
+    uint32_t tlsDataSize = 0;      // bytes inicializados do template
+    uint32_t tlsTotalSize = 0;     // bytes totais (inclui zero-init)
+
+    // XEX_HEADER_RESOURCE_INFO — recursos nomeados do XEX (8 chars id + VA +
+    // tamanho). O kernel real os expõe via XexGetModuleSection (o FH2 busca
+    // "0D163575" no boot p/ verificação de mídia — sem isso → dirty disc).
+    struct Resource {
+        char id[9];          // id ASCII (null-terminated)
+        uint32_t va;         // endereço guest do dado
+        uint32_t size;       // bytes
+    };
+    std::vector<Resource> resources;
 };
 
 /**

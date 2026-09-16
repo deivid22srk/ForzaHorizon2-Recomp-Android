@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <android/log.h>
+#include <chrono>
 
 #include <chrono>
 #include <cstring>
@@ -24,6 +25,7 @@ uint64_t g_guestMemBytes = 0;
 
 fh2::ppc::GuestHeap g_heap;
 fh2::ppc::GuestVirtWindow g_virt;
+fh2::ppc::GuestVirtWindow g_phys;
 
 input::InputState* g_input = nullptr;
 
@@ -31,7 +33,6 @@ input::InputState* g_input = nullptr;
 ThreadBody g_threadBody;
 std::map<uint32_t, std::shared_ptr<GuestThread>> g_threads;
 uint32_t g_nextThreadHandle = 0x90000000;
-uint32_t g_nextThreadId = 1;
 
 // --- waitables ---
 struct WaitEntry {
@@ -45,6 +46,10 @@ uint32_t g_nextHandle = 0xA0000000;
 // --- TLS do kernel ---
 void* g_tls[64] = {};
 bool g_tlsUsed[64] = {};
+
+// --- identidade de thread (kernel) ---
+std::atomic<uint32_t> g_nextKernelThreadId{2}; // 1 = thread principal
+thread_local uint32_t t_kernelThreadId = 0; // 0 = ainda não atribuído
 
 // --- stop ---
 std::atomic<bool> g_stop{false};
@@ -75,8 +80,21 @@ void setGuestMemory(uint8_t* guestMemZero, uint64_t guestMemBytes) {
 uint8_t* guestMem() { return g_guestMem; }
 uint64_t guestMemBytes() { return g_guestMemBytes; }
 
+bool guestPtrValid(uint64_t addr, uint64_t bytes) {
+    return g_guestMem && addr != 0 && addr + bytes <= g_guestMemBytes;
+}
+uint32_t readGuestU32(uint64_t addr) {
+    if (!guestPtrValid(addr, 4)) return 0;
+    return __builtin_bswap32(*(uint32_t*)(g_guestMem + addr));
+}
+void writeGuestU32(uint64_t addr, uint32_t v) {
+    if (!guestPtrValid(addr, 4)) return;
+    *(uint32_t*)(g_guestMem + addr) = __builtin_bswap32(v);
+}
+
 fh2::ppc::GuestHeap& heap() { return g_heap; }
 fh2::ppc::GuestVirtWindow& virtWindow() { return g_virt; }
+fh2::ppc::GuestVirtWindow& physWindow() { return g_phys; }
 
 void setInputBridge(input::InputState* input) { g_input = input; }
 input::InputState* inputBridge() { return g_input; }
@@ -91,7 +109,9 @@ uint32_t createThread(uint64_t stackSize, uint64_t startRoutine,
     {
         std::lock_guard<std::mutex> lk(g_stateM);
         t->handle = g_nextThreadHandle++;
-        t->id = g_nextThreadId++;
+        // ID do kernel compartilhado com currentThreadId(): sem colisão com a
+        // thread principal (1) nem com threads host efêmeras.
+        t->id = g_nextKernelThreadId.fetch_add(1);
         g_threads[t->handle] = t;
     }
     t->startRoutine = startRoutine;
@@ -273,6 +293,19 @@ long releaseMutant(Waitable* w, bool& abandoned) {
 }
 
 std::mutex& waitMutex() { return g_waitM; }
+std::condition_variable& waitCv() { return g_waitCv; }
+
+uint32_t currentThreadId() {
+    uint32_t id = t_kernelThreadId;
+    if (id == 0) {
+        // thread principal = 1; demais recebem ids sequenciais do kernel
+        id = g_nextKernelThreadId.fetch_add(1);
+        t_kernelThreadId = id;
+    }
+    return id;
+}
+
+void setHostThreadId(uint32_t id) { t_kernelThreadId = id; }
 
 void wakeAll() {
     g_waitCv.notify_all();
@@ -336,6 +369,98 @@ uint32_t waitForMultiple(Waitable** objs, size_t count, bool waitAny,
 uint32_t g_titleId = 0;
 void setTitleId(uint32_t id) { g_titleId = id; }
 uint32_t currentTitleId() { return g_titleId; }
+
+// info do módulo carregado (base + privilégios do EXECUTION_INFO) — usados
+// por XexGetModuleHandle/Section/CheckExecutablePrivilege (semântica real)
+uint32_t g_imageBase = 0;
+uint64_t g_imagePrivileges = 0;
+void setImageInfo(uint32_t base, uint64_t privileges) {
+    g_imageBase = base;
+    g_imagePrivileges = privileges;
+}
+uint32_t imageBase() { return g_imageBase; }
+uint64_t imagePrivileges() { return g_imagePrivileges; }
+
+std::vector<KernelResource> g_imageResources;
+void setImageResources(const KernelResource* res, size_t count) {
+    g_imageResources.assign(res, res + count);
+}
+const KernelResource* findImageResource(const char* id) {
+    for (const auto& r : g_imageResources) {
+        if (strncmp(r.id, id, 8) == 0) return &r;
+    }
+    return nullptr;
+}
+
+} // namespace fh2::kern
+
+// ------- arquivos abertos (fora do namespace p/ includes de std) -------
+
+#include "runtime/fs/fs_provider.h"
+
+namespace fh2::kern {
+
+fs::FsProvider* g_fsBridge = nullptr;
+void setFsBridge(fs::FsProvider* fs) { g_fsBridge = fs; }
+
+uint32_t g_nextFileHandle = 0x60000000;
+std::map<uint32_t, std::unique_ptr<GuestFile>> g_files;
+
+uint32_t fileOpen(const std::string& guestPath, const std::string& display,
+                  bool write, GuestFile** out) {
+    *out = nullptr;
+    if (!g_fsBridge) return 0;
+    uint64_t size = 0;
+    int fd = write ? g_fsBridge->openLocalWriteFd(guestPath)
+                   : g_fsBridge->openFileFd(guestPath, size);
+    if (fd < 0) return 0; // arquivo não existe — falha REAL
+    if (write) size = 0;
+    auto f = std::make_unique<GuestFile>();
+    f->path = guestPath;
+    f->display = display;
+    f->fd = fd;
+    f->size = size;
+    f->write = write;
+    GuestFile* p = f.get();
+    uint32_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        h = g_nextFileHandle += 4;
+        g_files[h] = std::move(f);
+    }
+    *out = p;
+    return h;
+}
+
+GuestFile* fileGet(uint32_t handle) {
+    std::lock_guard<std::mutex> lk(g_stateM);
+    auto it = g_files.find(handle);
+    return it == g_files.end() ? nullptr : it->second.get();
+}
+
+void fileClose(uint32_t handle) {
+    std::unique_ptr<GuestFile> f;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        auto it = g_files.find(handle);
+        if (it == g_files.end()) return;
+        f = std::move(it->second);
+        g_files.erase(it);
+    }
+    if (f->fd >= 0) close(f->fd);
+}
+
+void filesCloseAll() {
+    std::map<uint32_t, std::unique_ptr<GuestFile>> all;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        all = std::move(g_files);
+        g_files.clear();
+    }
+    for (auto& [h, f] : all) {
+        if (f->fd >= 0) close(f->fd);
+    }
+}
 
 // ---------------------------------------------------------------- TLS
 

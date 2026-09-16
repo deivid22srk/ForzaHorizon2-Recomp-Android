@@ -2,10 +2,10 @@
 //
 // GERADO por tools/gen_kernel_hle.py — 388 símbolos exigidos por
 // ppc_func_mapping.cpp. Três caminhos:
-//   REAL  (78): delega para fh2::kern::real_* com semântica real
+//   REAL  (92): delega para fh2::kern::real_* com semântica real
 //         (heap, tempo, threads, sync, TLS, printf, input — kernel_real.cpp)
 //   FAIL  (26): retorna status de falha REAL do estado do sistema
-//   stub  (284): log-once + NTSTATUS 0 (semântica pendente — issue #16)
+//   stub  (270): log-once + NTSTATUS 0 (semântica pendente — issue #16)
 // NÃO EDITAR À MÃO.
 #if FH2_HAS_RECOMP
 
@@ -13,6 +13,7 @@
 #include "ppc_config.h"
 #include "ppc_context.h"
 #include "runtime/ppc/kernel_real.h"
+#include "runtime/ppc/kernel_state.h"
 
 #define HLOG(...) __android_log_print(ANDROID_LOG_WARN, "FH2/HLE", __VA_ARGS__)
 
@@ -593,12 +594,10 @@ void __imp__MmQueryAllocationSize(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("MmQueryAllocationSize", ctx);
 }
 
-// MmQueryStatistics: semântica real pendente (issue #16)
+// MmQueryStatistics: semântica REAL (kernel_real.cpp)
 void __imp__MmQueryStatistics(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("MmQueryStatistics", ctx);
-    FH2_HLE_ONCE(MmQueryStatistics, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_MmQueryStatistics(ctx, base);
     fh2::kern::traceReturn("MmQueryStatistics", ctx);
 }
 
@@ -1152,12 +1151,10 @@ void __imp__NtCreateEvent(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtCreateEvent", ctx);
 }
 
-// NtCreateFile: falha REAL — STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente
+// NtCreateFile: semântica REAL (kernel_real.cpp)
 void __imp__NtCreateFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtCreateFile", ctx);
-    FH2_HLE_ONCE(NtCreateFile, "STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente");
-    ctx.r3.u32 = 0xC0000034u;
+    fh2::kern::real_NtCreateFile(ctx, base);
     fh2::kern::traceReturn("NtCreateFile", ctx);
 }
 
@@ -1202,12 +1199,10 @@ void __imp__NtDuplicateObject(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtDuplicateObject", ctx);
 }
 
-// NtFlushBuffersFile: falha REAL — FS pendente
+// NtFlushBuffersFile: semântica REAL (kernel_real.cpp)
 void __imp__NtFlushBuffersFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtFlushBuffersFile", ctx);
-    FH2_HLE_ONCE(NtFlushBuffersFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtFlushBuffersFile(ctx, base);
     fh2::kern::traceReturn("NtFlushBuffersFile", ctx);
 }
 
@@ -1218,12 +1213,10 @@ void __imp__NtFreeVirtualMemory(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtFreeVirtualMemory", ctx);
 }
 
-// NtOpenFile: falha REAL — STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente
+// NtOpenFile: semântica REAL (kernel_real.cpp)
 void __imp__NtOpenFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtOpenFile", ctx);
-    FH2_HLE_ONCE(NtOpenFile, "STATUS_OBJECT_NAME_NOT_FOUND — FS real pendente");
-    ctx.r3.u32 = 0xC0000034u;
+    fh2::kern::real_NtOpenFile(ctx, base);
     fh2::kern::traceReturn("NtOpenFile", ctx);
 }
 
@@ -1236,21 +1229,17 @@ void __imp__NtQueryDirectoryFile(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtQueryDirectoryFile", ctx);
 }
 
-// NtQueryFullAttributesFile: falha REAL — FS pendente
+// NtQueryFullAttributesFile: semântica REAL (kernel_real.cpp)
 void __imp__NtQueryFullAttributesFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtQueryFullAttributesFile", ctx);
-    FH2_HLE_ONCE(NtQueryFullAttributesFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000034u;
+    fh2::kern::real_NtQueryFullAttributesFile(ctx, base);
     fh2::kern::traceReturn("NtQueryFullAttributesFile", ctx);
 }
 
-// NtQueryInformationFile: falha REAL — FS pendente
+// NtQueryInformationFile: semântica REAL (kernel_real.cpp)
 void __imp__NtQueryInformationFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtQueryInformationFile", ctx);
-    FH2_HLE_ONCE(NtQueryInformationFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtQueryInformationFile(ctx, base);
     fh2::kern::traceReturn("NtQueryInformationFile", ctx);
 }
 
@@ -1261,30 +1250,24 @@ void __imp__NtQueryVirtualMemory(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtQueryVirtualMemory", ctx);
 }
 
-// NtQueryVolumeInformationFile: falha REAL — FS pendente
+// NtQueryVolumeInformationFile: semântica REAL (kernel_real.cpp)
 void __imp__NtQueryVolumeInformationFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtQueryVolumeInformationFile", ctx);
-    FH2_HLE_ONCE(NtQueryVolumeInformationFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtQueryVolumeInformationFile(ctx, base);
     fh2::kern::traceReturn("NtQueryVolumeInformationFile", ctx);
 }
 
-// NtReadFile: falha REAL — sem handle real (FS pendente)
+// NtReadFile: semântica REAL (kernel_real.cpp)
 void __imp__NtReadFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtReadFile", ctx);
-    FH2_HLE_ONCE(NtReadFile, "sem handle real (FS pendente)");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtReadFile(ctx, base);
     fh2::kern::traceReturn("NtReadFile", ctx);
 }
 
-// NtReadFileScatter: falha REAL — FS pendente
+// NtReadFileScatter: semântica REAL (kernel_real.cpp)
 void __imp__NtReadFileScatter(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtReadFileScatter", ctx);
-    FH2_HLE_ONCE(NtReadFileScatter, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtReadFileScatter(ctx, base);
     fh2::kern::traceReturn("NtReadFileScatter", ctx);
 }
 
@@ -1318,12 +1301,10 @@ void __imp__NtSetEvent(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtSetEvent", ctx);
 }
 
-// NtSetInformationFile: falha REAL — FS pendente
+// NtSetInformationFile: semântica REAL (kernel_real.cpp)
 void __imp__NtSetInformationFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtSetInformationFile", ctx);
-    FH2_HLE_ONCE(NtSetInformationFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtSetInformationFile(ctx, base);
     fh2::kern::traceReturn("NtSetInformationFile", ctx);
 }
 
@@ -1357,12 +1338,10 @@ void __imp__NtWaitForSingleObjectEx(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtWaitForSingleObjectEx", ctx);
 }
 
-// NtWriteFile: falha REAL — sem handle real (FS pendente)
+// NtWriteFile: semântica REAL (kernel_real.cpp)
 void __imp__NtWriteFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtWriteFile", ctx);
-    FH2_HLE_ONCE(NtWriteFile, "sem handle real (FS pendente)");
-    ctx.r3.u32 = 0xC0000001u;
+    fh2::kern::real_NtWriteFile(ctx, base);
     fh2::kern::traceReturn("NtWriteFile", ctx);
 }
 
@@ -3247,30 +3226,24 @@ void __imp__XeKeysObscureKey(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("XeKeysObscureKey", ctx);
 }
 
-// XexCheckExecutablePrivilege: semântica real pendente (issue #16)
+// XexCheckExecutablePrivilege: semântica REAL (kernel_real.cpp)
 void __imp__XexCheckExecutablePrivilege(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("XexCheckExecutablePrivilege", ctx);
-    FH2_HLE_ONCE(XexCheckExecutablePrivilege, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XexCheckExecutablePrivilege(ctx, base);
     fh2::kern::traceReturn("XexCheckExecutablePrivilege", ctx);
 }
 
-// XexGetModuleHandle: semântica real pendente (issue #16)
+// XexGetModuleHandle: semântica REAL (kernel_real.cpp)
 void __imp__XexGetModuleHandle(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("XexGetModuleHandle", ctx);
-    FH2_HLE_ONCE(XexGetModuleHandle, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XexGetModuleHandle(ctx, base);
     fh2::kern::traceReturn("XexGetModuleHandle", ctx);
 }
 
-// XexGetModuleSection: semântica real pendente (issue #16)
+// XexGetModuleSection: semântica REAL (kernel_real.cpp)
 void __imp__XexGetModuleSection(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("XexGetModuleSection", ctx);
-    FH2_HLE_ONCE(XexGetModuleSection, "semântica real pendente (issue #16)");
-    ctx.r3.u32 = 0;
+    fh2::kern::real_XexGetModuleSection(ctx, base);
     fh2::kern::traceReturn("XexGetModuleSection", ctx);
 }
 

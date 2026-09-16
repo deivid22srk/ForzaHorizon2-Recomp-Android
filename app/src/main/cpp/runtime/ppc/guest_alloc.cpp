@@ -76,11 +76,16 @@ void GuestHeap::free(uint64_t addr) {
             len += next->second;
             freeRanges_.erase(next);
         }
-        auto prev = std::prev(freeRanges_.lower_bound(start));
-        if (prev != freeRanges_.end() && prev->first + prev->second == start) {
-            start = prev->first;
-            len += prev->second;
-            freeRanges_.erase(prev);
+        // std::prev(begin()) é UB (árvore vazia/primeiro elemento) —
+        // verificar begin() ANTES de retroceder o iterador.
+        auto prev = freeRanges_.lower_bound(start);
+        if (prev != freeRanges_.begin()) {
+            --prev;
+            if (prev->first + prev->second == start) {
+                start = prev->first;
+                len += prev->second;
+                freeRanges_.erase(prev);
+            }
         }
     };
     uint64_t start = addr, len = size;
@@ -181,21 +186,25 @@ void GuestVirtWindow::free(uint64_t addr) {
     if (it == blocks_.end()) return;
     const uint64_t size = it->second;
     blocks_.erase(it);
-    auto merge = [&](uint64_t& start, uint64_t& len) {
+    // coalescência com vizinhos imediatos
+    uint64_t start = addr, len = size;
+    {
         auto next = freeRanges_.find(start + len);
         if (next != freeRanges_.end()) {
             len += next->second;
             freeRanges_.erase(next);
         }
-        auto prev = std::prev(freeRanges_.lower_bound(start));
-        if (prev != freeRanges_.end() && prev->first + prev->second == start) {
-            start = prev->first;
-            len += prev->second;
-            freeRanges_.erase(prev);
+        // std::prev(begin()) é UB (árvore vazia/primeiro elemento)
+        auto prev = freeRanges_.lower_bound(start);
+        if (prev != freeRanges_.begin()) {
+            --prev;
+            if (prev->first + prev->second == start) {
+                start = prev->first;
+                len += prev->second;
+                freeRanges_.erase(prev);
+            }
         }
-    };
-    uint64_t start = addr, len = size;
-    merge(start, len);
+    }
     freeRanges_[start] = len;
 }
 

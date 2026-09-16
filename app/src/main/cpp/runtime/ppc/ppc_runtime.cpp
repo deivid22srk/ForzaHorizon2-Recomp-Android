@@ -25,6 +25,11 @@
 #include <vector>
 
 #include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#if defined(__ANDROID__)
+#include <sys/syscall.h>
+#endif
 
 #include "runtime/audio/audio_output.h"
 #include "runtime/fs/fs_provider.h"
@@ -67,10 +72,28 @@ static constexpr uint64_t kHeapSize = 0x06000000ull;   // 96 MB
 static constexpr uint64_t kVirtBase = kHeapBase + kHeapSize;
 static constexpr uint64_t kVirtSize = 0x0C000000ull;   // 192 MB
 static constexpr uint64_t kMainStackTop = kVirtBase + kVirtSize + 0x01000000ull;
+
+// Modelo de memória do Xbox 360 (real):
+//   0x80000000..0xA0000000 — RAM flat do título (512 MB)
+//   0xA0000000..0xC0000000 — ALIAS FÍSICO: PA n espelhado em 0xA0000000+n.
+// As duas janelas mapeiam AS MESMAS páginas (memfd mapeado duas vezes), como
+// no console — pools físicos do jogo (ex.: 0xAF000000 = PA 0x0F000000)
+// acessam os mesmos bytes da vista flat.
+static constexpr uint64_t kRamBase = 0x80000000ull;
+static constexpr uint64_t kRamSize = 0x20000000ull;       // 512 MB
+static constexpr uint64_t kPhysAliasBase = 0xA0000000ull;
+static constexpr uint64_t kPhysAliasSize = 0x20000000ull; // 512 MB
+// Alocador físico do kernel: subfaixa do alias livre dos reservados
+// (imagem/tabela/heap/janela virtual terminam em PA 0x18000000).
+static constexpr uint64_t kPhysAllocBase = 0xB8000000ull; // PA 0x18000000
+static constexpr uint64_t kPhysAllocSize = 0x07E00000ull; // 126 MB
+
 static constexpr size_t kMemTotal =
-    static_cast<size_t>(kMainStackTop + 0x1000000ull);
+    static_cast<size_t>(kPhysAliasBase + kPhysAliasSize + 0x1000000ull);
 
 PpcRuntime::~PpcRuntime() {
+    // fecha arquivos guest abertos (fds de SAF/local) antes de desmapear
+    kern::filesCloseAll();
     if (memBase_) {
         munmap(reinterpret_cast<void*>(memBase_), kMemTotal);
         memBase_ = 0;
@@ -98,6 +121,47 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
     }
     memBase_ = reinterpret_cast<uintptr_t>(mapped);
     guestBase_ = memBase_ + 0x82000000ull;
+
+    // ALIAS FÍSICO REAL: memfd de 512 MB mapeado nas duas janelas
+    // (flat 0x80000000 e físico 0xA0000000) — as mesmas páginas RAM, como no
+    // console. Sem memfd, segue sem alias (acessos físicos usam páginas
+    // anônimas próprias — funcional, porém sem espelho; logado).
+    int ramFd = -1;
+#if defined(__ANDROID__)
+    ramFd = (int)syscall(SYS_memfd_create, "fh2ram", 0);
+#else
+    ramFd = memfd_create("fh2ram", 0);
+#endif
+    if (ramFd >= 0 && ftruncate(ramFd, (off_t)kRamSize) != 0) {
+        close(ramFd);
+        ramFd = -1;
+    }
+    if (ramFd >= 0) {
+        void* flat = mmap(reinterpret_cast<void*>(memBase_ + kRamBase),
+                          kRamSize, PROT_READ | PROT_WRITE,
+                          MAP_SHARED | MAP_FIXED | MAP_NORESERVE, ramFd, 0);
+        void* alias = mmap(reinterpret_cast<void*>(memBase_ + kPhysAliasBase),
+                           kPhysAliasSize, PROT_READ | PROT_WRITE,
+                           MAP_SHARED | MAP_FIXED | MAP_NORESERVE, ramFd, 0);
+        close(ramFd); // os mapeamentos mantêm as páginas vivas
+        if (flat == MAP_FAILED || alias == MAP_FAILED) {
+            if (flat != MAP_FAILED) munmap(flat, kRamSize);
+            if (alias != MAP_FAILED) munmap(alias, kPhysAliasSize);
+            ramFd = -1;
+        }
+    }
+    if (ramFd < 0) {
+        // fallback: janelas anônimas distintas (sem espelho flat↔físico)
+        mmap(reinterpret_cast<void*>(memBase_ + kRamBase), kRamSize,
+             PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED |
+                                         MAP_NORESERVE, -1, 0);
+        mmap(reinterpret_cast<void*>(memBase_ + kPhysAliasBase), kPhysAliasSize,
+             PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+        PLOG("alias físico flat↔físico indisponível (memfd falhou) — janelas "
+             "sem espelho (errno=%d)", errno);
+    }
+
     if (memBase_ == kMemBaseHint) {
         PLOG("memória guest: %zu MB (hint fixa) — imagem guest em 0x%08llX",
              kMemTotal >> 20, (unsigned long long)guestBase_);
@@ -108,6 +172,13 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
              kMemTotal >> 20, (unsigned long long)memBase_,
              (unsigned long long)kMemBaseHint, (unsigned long long)guestBase_);
     }
+    PLOG("modelo de memória: flat 0x%08llX..0x%08llX, alias físico "
+         "0x%08llX..0x%08llX (%s)",
+         (unsigned long long)kRamBase,
+         (unsigned long long)(kRamBase + kRamSize),
+         (unsigned long long)kPhysAliasBase,
+         (unsigned long long)(kPhysAliasBase + kPhysAliasSize),
+         ramFd >= 0 ? "memfd espelhado" : "anônimo sem espelho");
 
     kern::setGuestMemory(reinterpret_cast<uint8_t*>(memBase_), kMemTotal);
 
@@ -130,24 +201,44 @@ bool PpcRuntime::initialize(fs::FsProvider* fs) {
         }
         imageInfo_ = info;
         kern::setTitleId(info.titleId);
+        // Base + privilégios do módulo para XexGetModuleHandle/Section/
+        // CheckExecutablePrivilege (semântica real do kernel).
+        kern::setImageInfo(info.base, info.privileges);
+        // FsProvider para o file I/O do kernel HLE (NtCreateFile/Read — #19)
+        kern::setFsBridge(fs);
+        // Recursos nomeados do XEX p/ XexGetModuleSection (semântica real)
+        if (!info.resources.empty()) {
+            std::vector<kern::KernelResource> res;
+            for (const auto& r : info.resources) {
+                kern::KernelResource kr;
+                memcpy(kr.id, r.id, 9);
+                kr.va = r.va;
+                kr.size = r.size;
+                res.push_back(kr);
+            }
+            kern::setImageResources(res.data(), res.size());
+        }
 
         // TABELA MÁGICA de funções: sem ela, QUALQUER chamada indireta
         // (vtable, callback, import) leria ponteiro zero → SIGSEGV imediato.
         const uint64_t populated = populateMagicTable(
             reinterpret_cast<uint8_t*>(memBase_));
 
-        // Heap guest + janela virtual do kernel HLE
+        // Heap guest + janela virtual + janela física do kernel HLE
         kern::heap().init(kHeapBase, kHeapSize);
         kern::virtWindow().init(kVirtBase, kVirtSize);
+        kern::physWindow().init(kPhysAllocBase, kPhysAllocSize);
         PLOG("guest mapeado: entry 0x%08X — tabela mágica %llu funções "
              "(0x%08llX..0x%08llX), heap 0x%08llX (%llu MB), janela virtual "
-             "0x%08llX (%llu MB)",
+             "0x%08llX (%llu MB), janela física 0x%08llX (%llu MB)",
              info.entryPoint, (unsigned long long)populated,
              (unsigned long long)kImageEnd,
              (unsigned long long)kMagicTableEnd,
              (unsigned long long)kHeapBase, (unsigned long long)(kHeapSize >> 20),
              (unsigned long long)kVirtBase,
-             (unsigned long long)(kVirtSize >> 20));
+             (unsigned long long)(kVirtSize >> 20),
+             (unsigned long long)kPhysAllocBase,
+             (unsigned long long)(kPhysAllocSize >> 20));
     }
     return true;
 #else

@@ -39,6 +39,18 @@ public:
     /** Escreve arquivo (saves, shader cache persistente) — atômico. */
     bool writeFile(const std::string& guestPath, const std::vector<uint8_t>& data) const;
 
+    /**
+     * Abre um arquivo para I/O aleatório REAL (pread): fd cru + tamanho.
+     * Ordem: árvore SAF (fd do ContentResolver — seekable) → caminho local
+     * em filesDir. Retorna -1 se o arquivo não existir. O fd é de propriedade
+     * do chamador (close()).
+     */
+    int openFileFd(const std::string& guestPath, uint64_t& sizeOut) const;
+
+    /** Abre arquivo LOCAL (filesDir) para escrita — cria diretórios. Usado
+     *  pelo NtWriteFile (saves). -1 se o caminho não for seguro. */
+    int openLocalWriteFd(const std::string& guestPath) const;
+
     const std::string& filesDir() const { return filesDir_; }
 
 private:

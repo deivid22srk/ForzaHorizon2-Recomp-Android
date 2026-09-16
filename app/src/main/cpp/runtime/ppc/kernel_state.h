@@ -26,6 +26,7 @@
 #include "runtime/ppc/guest_alloc.h"
 
 namespace fh2::input { struct InputState; }
+namespace fh2::fs { class FsProvider; }
 
 namespace fh2::kern {
 
@@ -71,9 +72,17 @@ void setGuestMemory(uint8_t* guestMemZero, uint64_t guestMemBytes);
 uint8_t* guestMem();                 // nullptr antes do boot
 uint64_t guestMemBytes();
 
+// ---- acesso BE à memória guest (para HLE fora de kernel_real.cpp) ----
+bool guestPtrValid(uint64_t addr, uint64_t bytes);
+uint32_t readGuestU32(uint64_t addr);
+void writeGuestU32(uint64_t addr, uint32_t v);
+
 /** Janelas de alocação (chamadas uma vez no boot pelo PpcRuntime). */
 fh2::ppc::GuestHeap& heap();
 fh2::ppc::GuestVirtWindow& virtWindow();
+/** Janela FÍSICA do kernel (MmAllocatePhysicalMemoryEx) — endereços no
+ *  alias físico do guest (0xA0000000+), espelho das mesmas páginas RAM. */
+fh2::ppc::GuestVirtWindow& physWindow();
 
 /** Input real (HUD + gamepads) para XamInputGetState. */
 void setInputBridge(input::InputState* input);
@@ -134,12 +143,67 @@ long releaseMutant(Waitable* w, bool& abandoned);
 void wakeAll();
 /** Mutex global dos waitables (para testes atômicos fora de waitForMultiple). */
 std::mutex& waitMutex();
+/** CV global do kernel — par do waitMutex (waits customizados, ex. critsecs). */
+std::condition_variable& waitCv();
+
+// ------------------------------------------------- identidade da thread
+
+/** ID de thread do kernel da thread host atual. Estável por thread: guest
+ *  threads usam o mesmo id gravado no TEB (ClientId.UniqueThread, +0x24),
+ *  de modo que comparações OwningThread == TEB->ClientId.UniqueThread do
+ *  guest funcionam exatamente como no kernel real. */
+uint32_t currentThreadId();
+/** Sobrescreve o id da thread atual (guest threads chamam com t->id). */
+void setHostThreadId(uint32_t id);
 
 // --------------------------------------------------------- title id
 
 /** ID do título (lido do XEX_HEADER_EXECUTION_INFO no boot). */
 void setTitleId(uint32_t id);
 uint32_t currentTitleId();
+
+// ------------------------------------------- info do módulo XEX carregado
+
+/** Base da imagem + privilégios do EXECUTION_INFO (fixados no boot) —
+ *  semântica real para XexGetModuleHandle/XexGetModuleSection/
+ *  XexCheckExecutablePrivilege. */
+void setImageInfo(uint32_t base, uint64_t privileges);
+uint32_t imageBase();
+uint64_t imagePrivileges();
+
+/** Recursos nomeados do XEX (XEX_HEADER_RESOURCE_INFO) — expostos via
+ *  XexGetModuleSection (semântica real do kernel do 360). */
+struct KernelResource {
+    char id[9];
+    uint32_t va;
+    uint32_t size;
+};
+void setImageResources(const KernelResource* res, size_t count);
+const KernelResource* findImageResource(const char* id);
+
+// ---------------------------------------------------- arquivos abertos
+
+/** Objeto de arquivo aberto (equivalente do FILE_OBJECT do kernel real). */
+struct GuestFile {
+    std::string path;      // caminho guest normalizado (game:/… → relativo)
+    std::string display;   // caminho original p/ log
+    int fd = -1;           // fd host (SAF direto ou local) — pread real
+    uint64_t size = 0;     // tamanho real do arquivo
+    uint64_t pos = 0;      // ponteiro lógico (uso quando ByteOffset=NULL)
+    bool write = false;    // aberto para escrita (só paths locais)
+};
+
+/** Abre (ou falha REAL se o arquivo não existir). Handle 0 = erro. */
+uint32_t fileOpen(const std::string& guestPath, const std::string& display,
+                  bool write, GuestFile** out);
+/** Resolve handle → objeto (nullptr se inválido). */
+GuestFile* fileGet(uint32_t handle);
+/** Fecha o fd e remove o handle. */
+void fileClose(uint32_t handle);
+/** Fecha tudo (stop do runtime). */
+void filesCloseAll();
+/** Registra o FsProvider usado por fileOpen (chamado no boot). */
+void setFsBridge(fs::FsProvider* fs);
 
 // ---------------------------------------------------------------- TLS
 
