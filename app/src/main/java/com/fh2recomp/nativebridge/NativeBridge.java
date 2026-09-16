@@ -14,10 +14,12 @@ public final class NativeBridge {
 
     /**
      * Inicializa o runtime e inicia a thread principal do jogo.
-     * @param assetsTreeUri URI SAF da pasta de assets fornecida pelo usuário
+     * @param assetsUri URI SAF da origem dos assets do jogo (árvore OU arquivo ISO)
+     * @param assetsIsIso true se o URI é um arquivo .iso selecionado (modo ISO)
      * @return true se o boot do runtime iniciou com sucesso
      */
-    public native boolean nativeBoot(String assetsTreeUri, int resolutionScalePct,
+    public native boolean nativeBoot(String assetsUri, boolean assetsIsIso,
+                                     int resolutionScalePct,
                                      boolean fps60, boolean useVulkan);
 
     /** Cria/realoca a superfície gráfica (chamado na UI thread via SurfaceHolder). */
@@ -56,6 +58,28 @@ public final class NativeBridge {
             return pfd.detachFd(); // ownership passa ao native
         } catch (Exception e) {
             android.util.Log.w(TAG, "openSaf falhou: " + guestPath, e);
+            return -1;
+        }
+    }
+
+    /**
+     * Abre um content URI DIRETO (documento único — ex.: a ISO selecionada)
+     * e devolve um fd cru (detachFd). Usado pelo modo ISO: o native mantém o
+     * fd aberto e faz pread aleatório nos offsets da árvore GDFX.
+     *
+     * @return fd >= 0 (propriedade do native); -1 se falhou
+     */
+    public static int openSafUri(String uriString) {
+        android.content.Context ctx = appContext;
+        if (ctx == null || uriString == null) return -1;
+        try {
+            android.net.Uri uri = android.net.Uri.parse(uriString);
+            android.os.ParcelFileDescriptor pfd =
+                    ctx.getContentResolver().openFileDescriptor(uri, "r");
+            if (pfd == null) return -1;
+            return pfd.detachFd();
+        } catch (Exception e) {
+            android.util.Log.w(TAG, "openSafUri falhou: " + uriString, e);
             return -1;
         }
     }

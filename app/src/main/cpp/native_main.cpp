@@ -94,17 +94,19 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeSetFilesDir(
 
 JNIEXPORT jboolean JNICALL
 Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
-        JNIEnv* env, jobject, jstring assetsTreeUri, jint resolutionScalePct,
-        jboolean fps60, jboolean useVulkan) {
+        JNIEnv* env, jobject, jstring assetsUri, jboolean assetsIsIso,
+        jint resolutionScalePct, jboolean fps60, jboolean useVulkan) {
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.lifecycleMutex);
     if (s.booted) return JNI_TRUE;
 
-    const char* uri = assetsTreeUri ? env->GetStringUTFChars(assetsTreeUri, nullptr) : "";
-    LOGI("nativeBoot: assets=%s scale=%d%% fps60=%d vulkan=%d",
-         uri ? uri : "", resolutionScalePct, fps60 ? 1 : 0, useVulkan ? 1 : 0);
+    const char* uri = assetsUri ? env->GetStringUTFChars(assetsUri, nullptr) : "";
+    LOGI("nativeBoot: assets=%s iso=%d scale=%d%% fps60=%d vulkan=%d",
+         uri ? uri : "", assetsIsIso == JNI_TRUE ? 1 : 0, resolutionScalePct,
+         fps60 ? 1 : 0, useVulkan ? 1 : 0);
 
     s.fs.setAssetsTreeUri(uri ? uri : "");
+    s.fs.setAssetsIsIso(assetsIsIso == JNI_TRUE);
     s.fs.initialize(env);
     s.gfx = fh2::gfx::createBackend(useVulkan != JNI_FALSE, resolutionScalePct);
     if (s.gfx) s.gfx->setFpsTarget(fps60 != JNI_FALSE ? 60 : 30);
@@ -113,7 +115,7 @@ Java_com_fh2recomp_nativebridge_NativeBridge_nativeBoot(
     s.ppc = std::make_unique<fh2::ppc::PpcRuntime>();
     bool ok = s.ppc->initialize(&s.fs);
 
-    if (uri && assetsTreeUri) env->ReleaseStringUTFChars(assetsTreeUri, uri);
+    if (uri && assetsUri) env->ReleaseStringUTFChars(assetsUri, uri);
 
     if (!ok) {
         LOGE("nativeBoot: inicialização do guest falhou (memória/loader XEX — "

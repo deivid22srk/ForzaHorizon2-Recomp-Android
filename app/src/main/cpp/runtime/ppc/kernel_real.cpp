@@ -2128,14 +2128,36 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
     }
 
     // ------------------------------------------------ dispositivo de blocos
-    // \Device\Harddisk0\Partition0: setores de 2048 B servidos pelo
-    // gerador do disco virtual. O XDVDFS descreve a estrutura no setor 32
-    // ("MICROSOFT*XBOX*MEDIA" + diretório raiz) — a única área preenchida
-    // sem a imagem bruta; o restante é zero REAL (área não presente no
-    // dump de arquivos). Cada leitura é logada com setor/bytes: o padrão
-    // de leitura do título mostra exatamente o que a mídia virtual ainda
-    // precisa servir (issue #19 — montagem GDFX).
+    // \Device\Harddisk0\Partition0: setores de 2048 B.
+    //   • MODO ISO: fd real da imagem — TODOS os bytes são os do disco do
+    //     usuário (partição GDFX completa, incluindo setor 32 real).
+    //   • MODO PASTA: mídia virtual — setor 32 sintético (magic XDVDFS) e
+    //     zeros no restante (área não presente num dump de arquivos). Cada
+    //     leitura é logada: o padrão do título mostra o que falta servir.
     if (f->rawDevice) {
+        // MODO ISO: fd REAL da imagem — bytes REAIS do disco via pread.
+        if (f->fd >= 0) {
+            uint32_t done = 0;
+            if (length > 0 && off < f->size) {
+                const uint64_t want = std::min<uint64_t>(length, f->size - off);
+                ssize_t n;
+                do {
+                    n = pread(f->fd, base + buffer + done, want - done,
+                              (off_t)(off + done));
+                } while (n > 0 && (done += (uint32_t)n) < want);
+                done = (uint32_t)std::min<uint64_t>(done, want);
+                f->pos = off + done;
+            }
+            w32(base, pIoStatus, 0);
+            w32(base, pIoStatus + 4, done);
+            ctx.r3.u32 = STATUS_SUCCESS;
+            static Throttle t;
+            if (t.shouldLog(8, 256)) {
+                RLOG("NtReadFile(Partition0/ISO) setor=%llu len=%u = %u bytes",
+                     (unsigned long long)(off / 2048), length, done);
+            }
+            return;
+        }
         uint32_t done = 0;
         if (length > 0 && off < f->size) {
             done = (uint32_t)std::min<uint64_t>(length, f->size - off);
@@ -2185,7 +2207,7 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
             ssize_t n;
             do {
                 n = pread(f->fd, base + buffer + done, want - done,
-                          (off_t)(off + done));
+                          (off_t)(f->baseOffset + off + done));
             } while (n > 0 && (done += (uint32_t)n) < want);
             done = (uint32_t)std::min<uint64_t>(done, want);
         }

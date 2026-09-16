@@ -351,6 +351,8 @@ struct GuestFile {
                            // open relativo e NtQueryDirectoryFile)
     bool rawDevice = false;// \Device\Harddisk0\Partition0 — dispositivo
                            // de blocos do disco (setores 2048B)
+    uint64_t baseOffset = 0; // ISO: offset do arquivo dentro da imagem —
+                             // pread(fd, baseOffset + pos) serve o conteúdo
 };
 
 /** Abre (ou falha REAL se o arquivo não existir). Handle 0 = erro. */

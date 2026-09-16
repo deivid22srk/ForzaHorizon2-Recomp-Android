@@ -40,6 +40,7 @@ public class GameActivity extends AppCompatActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         Uri assetsUri = getIntent().getData();
+        boolean assetsIsIso = getIntent().getBooleanExtra("assets_is_iso", false);
         int resolutionScale = getIntent().getIntExtra("resolution_scale", 75);
         boolean fps60 = getIntent().getBooleanExtra("fps_60", true);
         boolean useVulkan = getIntent().getBooleanExtra("use_vulkan", true);
@@ -61,7 +62,7 @@ public class GameActivity extends AppCompatActivity {
         GameSurfaceView surface = findViewById(R.id.game_surface);
         surface.setHost(this, nativeBridge,
                 assetsUri != null ? assetsUri.toString() : null,
-                resolutionScale, fps60, useVulkan);
+                assetsIsIso, resolutionScale, fps60, useVulkan);
     }
 
     @Override

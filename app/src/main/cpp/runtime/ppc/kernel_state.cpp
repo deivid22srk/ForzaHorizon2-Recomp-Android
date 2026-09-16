@@ -759,8 +759,9 @@ uint32_t fileOpen(const std::string& guestPath, const std::string& display,
     *out = nullptr;
     if (!g_fsBridge) return 0;
     uint64_t size = 0;
+    uint64_t base = 0;
     int fd = write ? g_fsBridge->openLocalWriteFd(guestPath)
-                   : g_fsBridge->openFileFd(guestPath, size);
+                   : g_fsBridge->openFileFdEx(guestPath, size, base);
     if (fd < 0) return 0; // arquivo não existe — falha REAL
     if (write) size = 0;
     auto f = std::make_unique<GuestFile>();
@@ -768,6 +769,7 @@ uint32_t fileOpen(const std::string& guestPath, const std::string& display,
     f->display = display;
     f->fd = fd;
     f->size = size;
+    f->baseOffset = base; // ISO: offset do arquivo dentro da imagem
     f->write = write;
     GuestFile* p = f.get();
     uint32_t h;
@@ -806,6 +808,16 @@ uint32_t fileOpenRawDevice(const std::string& display, uint64_t sizeBytes,
     f->display = display;
     f->rawDevice = true;
     f->size = sizeBytes;
+    // MODO ISO: fd REAL da imagem — leituras brutas servem os bytes reais do
+    // disco (setores 2048B) via pread, sem nada sintético.
+    if (g_fsBridge) {
+        uint64_t realSize = 0;
+        const int fd = g_fsBridge->openRawDiscFd(realSize);
+        if (fd >= 0) {
+            f->fd = fd;
+            f->size = realSize;
+        }
+    }
     GuestFile* p = f.get();
     uint32_t h;
     {

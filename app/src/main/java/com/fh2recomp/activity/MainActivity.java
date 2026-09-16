@@ -30,6 +30,7 @@ public class MainActivity extends AppCompatActivity {
     private SharedPreferences prefs;
     private TextView folderLabel;
     private Uri assetsUri;
+    private boolean assetsIsIso = false;
 
     private final ActivityResultLauncher<Intent> folderPicker =
             registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
@@ -49,8 +50,34 @@ public class MainActivity extends AppCompatActivity {
                         } catch (SecurityException | IllegalArgumentException ignored) {
                         }
                         assetsUri = uri;
-                        prefs.edit().putString("assets_uri", uri.toString()).apply();
+                        assetsIsIso = false;
+                        prefs.edit().putString("assets_uri", uri.toString())
+                                .putBoolean("assets_is_iso", false).apply();
                         folderLabel.setText(uri.getPath());
+                    }
+                }
+            });
+
+    /** Seleção de ISO do jogo (documento único) — leitura direta via fd,
+     *  SEM copiar para o app; a árvore GDFX do disco é montada no native. */
+    private final ActivityResultLauncher<Intent> isoPicker =
+            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+                if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                    Uri uri = result.getData().getData();
+                    if (uri != null) {
+                        final int takeFlags = result.getData().getFlags()
+                                & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                   | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                        try {
+                            getContentResolver().takePersistableUriPermission(uri, takeFlags);
+                        } catch (SecurityException | IllegalArgumentException ignored) {
+                        }
+                        assetsUri = uri;
+                        assetsIsIso = true;
+                        prefs.edit().putString("assets_uri", uri.toString())
+                                .putBoolean("assets_is_iso", true).apply();
+                        String name = uri.getLastPathSegment();
+                        folderLabel.setText("ISO: " + (name != null ? name : uri.getPath()));
                     }
                 }
             });
@@ -68,11 +95,18 @@ public class MainActivity extends AppCompatActivity {
         String saved = prefs.getString("assets_uri", null);
         if (saved != null) {
             assetsUri = Uri.parse(saved);
-            folderLabel.setText(assetsUri.getPath());
+            assetsIsIso = prefs.getBoolean("assets_is_iso", false);
+            folderLabel.setText((assetsIsIso ? "ISO: " : "")
+                    + (assetsUri.getPath() != null ? assetsUri.getPath() : saved));
         }
 
         Button btnFolder = findViewById(R.id.btn_select_folder);
         btnFolder.setOnClickListener(v -> openFolderPicker());
+
+        Button btnIso = findViewById(R.id.btn_select_iso);
+        if (btnIso != null) {
+            btnIso.setOnClickListener(v -> openIsoPicker());
+        }
 
         Button btnLaunch = findViewById(R.id.btn_launch);
         btnLaunch.setOnClickListener(v -> launchGame());
@@ -91,6 +125,17 @@ public class MainActivity extends AppCompatActivity {
         folderPicker.launch(intent);
     }
 
+    private void openIsoPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES,
+                new String[]{"application/octet-stream", "application/x-iso9660-image"});
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        isoPicker.launch(intent);
+    }
+
     private void launchGame() {
         if (assetsUri == null) {
             Toast.makeText(this, R.string.no_assets, Toast.LENGTH_LONG).show();
@@ -98,6 +143,7 @@ public class MainActivity extends AppCompatActivity {
         }
         Intent intent = new Intent(this, GameActivity.class);
         intent.setData(assetsUri);
+        intent.putExtra("assets_is_iso", assetsIsIso);
         intent.putExtra("resolution_scale", prefs.getInt("resolution_scale", 75));
         intent.putExtra("fps_60", prefs.getBoolean("fps_60", true));
         intent.putExtra("use_vulkan", prefs.getBoolean("use_vulkan", true));

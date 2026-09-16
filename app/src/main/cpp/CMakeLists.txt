@@ -23,6 +23,7 @@ add_library(fh2recomp SHARED
     runtime/audio/audio_output.cpp
     runtime/input/input_state.cpp
     runtime/fs/fs_provider.cpp
+    runtime/fs/xiso.cpp
     runtime/ppc/ppc_runtime.cpp
     runtime/ppc/kernel_hle.cpp
     runtime/ppc/kernel_state.cpp

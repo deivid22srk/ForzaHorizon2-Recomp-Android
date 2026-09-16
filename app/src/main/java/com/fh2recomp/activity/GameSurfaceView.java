@@ -19,6 +19,7 @@ public class GameSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     private int resolutionScale;
     private boolean fps60;
     private boolean useVulkan;
+    private boolean assetsIsIso;
     private boolean booted;
 
     public GameSurfaceView(Context context) {
@@ -34,9 +35,11 @@ public class GameSurfaceView extends SurfaceView implements SurfaceHolder.Callba
     }
 
     void setHost(GameActivity activity, NativeBridge bridge, String assetsUri,
-                 int resolutionScale, boolean fps60, boolean useVulkan) {
+                 boolean assetsIsIso, int resolutionScale, boolean fps60,
+                 boolean useVulkan) {
         this.bridge = bridge;
         this.assetsUri = assetsUri;
+        this.assetsIsIso = assetsIsIso;
         this.resolutionScale = resolutionScale;
         this.fps60 = fps60;
         this.useVulkan = useVulkan;
@@ -50,7 +53,8 @@ public class GameSurfaceView extends SurfaceView implements SurfaceHolder.Callba
             booted = true;
             // Boot assíncrono: evita travar a UI thread durante o init do runtime
             new Thread(() -> {
-                if (bridge.nativeBoot(assetsUri, resolutionScale, fps60, useVulkan)) {
+                if (bridge.nativeBoot(assetsUri, assetsIsIso, resolutionScale,
+                        fps60, useVulkan)) {
                     bridge.nativeSetSurface(s, holder.getSurfaceFrame().width(),
                             holder.getSurfaceFrame().height());
                 }

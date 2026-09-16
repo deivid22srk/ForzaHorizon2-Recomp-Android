@@ -11,5 +11,6 @@
     <string name="hud_opacity">Opacidade dos controles touch</string>
     <string name="launch_game">Iniciar jogo</string>
     <string name="game_running">Executando…</string>
+    <string name="select_iso">Selecionar ISO do jogo (.iso) — leitura direta, sem cópia</string>
     <string name="no_assets">Nenhum diretório de assets selecionado. Selecione a pasta contendo os arquivos do jogo antes de iniciar.</string>
 </resources>

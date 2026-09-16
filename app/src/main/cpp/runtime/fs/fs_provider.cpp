@@ -23,6 +23,8 @@ void FsProvider::initialize(JNIEnv* env) {
     bridgeClass_ = static_cast<jclass>(env->NewGlobalRef(cls));
     openSafMethod_ = env->GetStaticMethodID(cls, "openSaf", "(Ljava/lang/String;)I");
     if (!openSafMethod_) { FLOGE("openSaf não encontrado (leitura direta indisponível)"); env->ExceptionClear(); }
+    openSafUriMethod_ = env->GetStaticMethodID(cls, "openSafUri", "(Ljava/lang/String;)I");
+    if (!openSafUriMethod_) { FLOGE("openSafUri não encontrado (modo ISO indisponível)"); env->ExceptionClear(); }
     copyMethod_ = env->GetStaticMethodID(cls, "copyFromSaf", "(Ljava/lang/String;)Z");
     if (!copyMethod_) { FLOGE("copyFromSaf não encontrado (fallback indisponível)"); env->ExceptionClear(); }
     bootMsgMethod_ = env->GetStaticMethodID(cls, "bootMessage", "(Ljava/lang/String;)V");
@@ -173,6 +175,15 @@ bool FsProvider::readFile(const std::string& guestPath, std::vector<uint8_t>& ou
                           size_t maxBytes) const {
     if (!isSafeGuestPath(guestPath)) return false;
 
+    // (0) MODO ISO: leitura DIRETA da imagem (pread no offset do arquivo)
+    if (assetsIsIso_) {
+        if (XisoImage* iso = ensureIso()) {
+            if (iso->readFile(guestPath, out, maxBytes)) return true;
+        }
+        noteFailure(guestPath);
+        return false;
+    }
+
     // (1) DIRETO da árvore SAF — caminho padrão, sem cópia para o app
     if (!assetsUri_.empty() && openSafMethod_) {
         int fd = openSafDirect(guestPath);
@@ -218,8 +229,66 @@ bool FsProvider::writeFile(const std::string& guestPath, const std::vector<uint8
     return true;
 }
 
-int FsProvider::openFileFd(const std::string& guestPath, uint64_t& sizeOut) const {
+// Abre a ISO 1× (lazy, thread-safe): fd do URI persistido via Java + parse
+// GDFX. O fd permanece aberto — I/O aleatório dos arquivos do jogo via pread.
+XisoImage* FsProvider::ensureIso() const {
+    std::lock_guard<std::mutex> lk(isoM_);
+    if (iso_) return iso_.get();
+    if (isoTried_) return nullptr;
+    isoTried_ = true;
+    if (assetsUri_.empty() || !openSafUriMethod_ || !bridgeClass_) {
+        FLOGE("ISO: URI/callback ausentes — leitura da imagem indisponível");
+        return nullptr;
+    }
+    bool attached = false;
+    JNIEnv* env = attachEnv(attached);
+    if (!env) return nullptr;
+    int fd = -1;
+    jstring juri = env->NewStringUTF(assetsUri_.c_str());
+    if (juri) {
+        fd = env->CallStaticIntMethod(bridgeClass_, openSafUriMethod_, juri);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); fd = -1; }
+        env->DeleteLocalRef(juri);
+    }
+    if (attached) jvm_->DetachCurrentThread();
+    if (fd < 0) {
+        FLOGE("ISO: openFileDescriptor falhou p/ %s", assetsUri_.c_str());
+        return nullptr;
+    }
+    auto img = std::make_unique<XisoImage>();
+    if (!img->open(fd)) { // open() assume a posse do fd mesmo em falha
+        FLOGE("ISO: imagem inválida (sem partição GDFX/XDVDFS)");
+        return nullptr;
+    }
+    iso_ = std::move(img);
+    FLOG("ISO: origem do jogo ativa (%llu bytes, zero cópia)",
+         (unsigned long long)iso_->totalSize());
+    return iso_.get();
+}
+
+int FsProvider::openFileFdEx(const std::string& guestPath, uint64_t& sizeOut,
+                             uint64_t& baseOffsetOut) const {
+    baseOffsetOut = 0;
     if (!isSafeGuestPath(guestPath)) return -1;
+
+    // (0) MODO ISO: dup do fd da imagem + offset-base do arquivo — pread com
+    // base-offset serve o conteúdo do arquivo SEM nenhuma cópia
+    if (assetsIsIso_) {
+        if (XisoImage* iso = ensureIso()) {
+            XisoImage::Node n;
+            if (iso->lookup(guestPath, n)) {
+                const int dupFd = iso->dupFd();
+                if (dupFd >= 0) {
+                    sizeOut = n.size;
+                    baseOffsetOut = n.offset;
+                    return dupFd;
+                }
+            }
+        }
+        noteFailure(guestPath);
+        return -1;
+    }
+
     // (1) fd DIRETO da árvore SAF — seekable, pread funciona sem cópia
     if (!assetsUri_.empty() && openSafMethod_) {
         int fd = openSafDirect(guestPath);
@@ -258,6 +327,32 @@ int FsProvider::openFileFd(const std::string& guestPath, uint64_t& sizeOut) cons
         }
     }
     noteFailure(guestPath);
+    return -1;
+}
+
+int FsProvider::openRawDiscFd(uint64_t& sizeOut) const {
+    sizeOut = 0;
+    if (!assetsIsIso_) return -1;
+    if (XisoImage* iso = ensureIso()) {
+        // O XisoImage encapsula o fd — duplica um fd NOVO para o raw device
+        // reabrindo pelo Java (barato e seguro): cada chamada devolve um fd
+        // independente posicionado no início da imagem.
+        bool attached = false;
+        JNIEnv* env = attachEnv(attached);
+        if (!env) return -1;
+        int fd = -1;
+        jstring juri = env->NewStringUTF(assetsUri_.c_str());
+        if (juri) {
+            fd = env->CallStaticIntMethod(bridgeClass_, openSafUriMethod_, juri);
+            if (env->ExceptionCheck()) { env->ExceptionClear(); fd = -1; }
+            env->DeleteLocalRef(juri);
+        }
+        if (attached) jvm_->DetachCurrentThread();
+        if (fd >= 0) {
+            sizeOut = iso->totalSize();
+            return fd;
+        }
+    }
     return -1;
 }
 
