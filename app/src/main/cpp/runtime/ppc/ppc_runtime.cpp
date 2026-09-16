@@ -314,6 +314,22 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
                 PLOG("limite de %d relaunches do título atingido — o jogo "
                      "continua relançando a si mesmo; encerrando o guest p/ "
                      "evitar loop infinito", kMaxBoots);
+                // Diagnóstico REAL do loop: quase sempre é o launcher do FH2
+                // relançando por arquivo ausente (update:\media.zip etc.).
+                // Aviso VISÍVEL (Toast) — falha de boot não pode ser uma tela
+                // preta silenciosa.
+                if (fs && !fs->lastFailure().empty()) {
+                    PLOG("causa provável: leitura de '%s' falhou — verifique "
+                         "se a pasta do jogo contém TODOS os arquivos do "
+                         "disco (media.zip fica na RAIZ, junto do "
+                         "default.xex)",
+                         fs->lastFailure().c_str());
+                    fs->showBootMessage(
+                        "Arquivo do jogo não encontrado: " +
+                        fs->lastFailure() +
+                        " — verifique se a pasta contém todos os arquivos do "
+                        "disco (media.zip na raiz, junto do default.xex)");
+                }
                 break;
             }
             runGuestMain(imageInfo_.entryPoint,

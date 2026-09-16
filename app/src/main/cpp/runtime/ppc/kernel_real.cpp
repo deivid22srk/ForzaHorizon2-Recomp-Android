@@ -1649,9 +1649,11 @@ void real_XexLoadImage(PPCContext& ctx, uint8_t* base) {
         }
         return;
     }
-    // XEX secundário: caminho guest → relativo ao volume (game:\x → x)
+    // XEX secundário: caminho guest → relativo ao volume (game:\x → x,
+    // update:\x → x — o launcher do FH2 também carrega pelo volume update)
     std::string rel = name;
-    for (const char* pre : {"game:\\", "game:", "D:\\", "d:\\"}) {
+    for (const char* pre : {"game:\\", "game:", "update:\\", "update:",
+                            "D:\\", "d:\\"}) {
         const size_t n = strlen(pre);
         if (rel.size() > n && strncasecmp(rel.c_str(), pre, n) == 0) {
             rel = rel.substr(n);
@@ -1736,7 +1738,10 @@ static std::string normalizeGuestPath(const std::string& in) {
         if (p.size() > n && strncasecmp(p.c_str(), pre, n) == 0) p = p.substr(n);
     }
     // volumes conhecidos: game:, d:, cdrom0 — ambos "game:\x" e "game:/x"
-    for (const char* vol : {"game:", "d:", "cdrom0:", "cache:"}) {
+    // update: mapeia para a MESMA árvore (kernel real: sem title update
+    // instalado o volume update cai no diretório do título — o FH2 lê
+    // update:\media.zip da raiz do dump; mesmo mapeamento do Xenia).
+    for (const char* vol : {"game:", "update:", "d:", "cdrom0:", "cache:"}) {
         const size_t n = strlen(vol);
         if (p.size() > n && strncasecmp(p.c_str(), vol, n) == 0 &&
             (p[n] == '\\' || p[n] == '/')) {

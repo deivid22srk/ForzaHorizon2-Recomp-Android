@@ -149,6 +149,27 @@ public final class NativeBridge {
         synchronized (safCacheLock) { safCache.clear(); }
     }
 
+    /**
+     * Mensagem de boot do runtime nativo (ex.: arquivo do jogo ausente que
+     * provoca o loop de relaunch). Mostra um Toast na thread de UI — o
+     * usuário vê O MOTIVO quando o jogo não abre, em vez de tela preta.
+     * Chamado de qualquer thread (guest incluída); seguro e throttled no
+     * nativo.
+     */
+    public static void bootMessage(final String msg) {
+        final android.content.Context ctx = appContext;
+        if (ctx == null || msg == null || msg.isEmpty()) return;
+        android.util.Log.i(TAG, "bootMessage: " + msg);
+        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        h.post(() -> {
+            try {
+                android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_LONG).show();
+            } catch (Exception e) {
+                android.util.Log.w(TAG, "bootMessage toast falhou", e);
+            }
+        });
+    }
+
     /** Botão virtual do HUD (códigos em TouchHudView.ButtonId). */
     public static native void onVirtualButton(int buttonId, boolean pressed);
 

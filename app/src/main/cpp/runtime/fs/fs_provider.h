@@ -11,6 +11,7 @@
 #pragma once
 
 #include <jni.h>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -53,7 +54,17 @@ public:
 
     const std::string& filesDir() const { return filesDir_; }
 
+    /** Último caminho cuja leitura falhou (todas as origens) — diagnóstico
+     *  do loop de relaunch (XamLoaderLaunchTitle por arquivo ausente). */
+    std::string lastFailure() const;
+
+    /** Mensagem visível ao usuário (Toast via NativeBridge.bootMessage) —
+     *  usada quando o boot falha por arquivo ausente, para que a falha NÃO
+     *  seja uma tela preta silenciosa. */
+    void showBootMessage(const std::string& msg) const;
+
 private:
+    void noteFailure(const std::string& p) const;
     bool resolvePath(const std::string& guestPath, std::string& out) const;
     bool readLocal(const std::string& path, std::vector<uint8_t>& out,
                    size_t maxBytes) const;
@@ -67,6 +78,9 @@ private:
     jclass bridgeClass_ = nullptr;    // GlobalRef de NativeBridge
     jmethodID openSafMethod_ = nullptr; // openSaf(String)I — fd direto
     jmethodID copyMethod_ = nullptr;    // copyFromSaf(String)Z — fallback
+    jmethodID bootMsgMethod_ = nullptr; // bootMessage(String)V — Toast UI
+    mutable std::mutex failM_;          // protege lastFailure_ (guest threads)
+    mutable std::string lastFailure_;   // último caminho não lido
 };
 
 } // namespace fh2::fs

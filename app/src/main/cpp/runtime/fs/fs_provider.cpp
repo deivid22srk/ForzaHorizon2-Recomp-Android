@@ -25,6 +25,8 @@ void FsProvider::initialize(JNIEnv* env) {
     if (!openSafMethod_) { FLOGE("openSaf não encontrado (leitura direta indisponível)"); env->ExceptionClear(); }
     copyMethod_ = env->GetStaticMethodID(cls, "copyFromSaf", "(Ljava/lang/String;)Z");
     if (!copyMethod_) { FLOGE("copyFromSaf não encontrado (fallback indisponível)"); env->ExceptionClear(); }
+    bootMsgMethod_ = env->GetStaticMethodID(cls, "bootMessage", "(Ljava/lang/String;)V");
+    if (!bootMsgMethod_) { FLOGE("bootMessage não encontrado (avisos de boot sem UI)"); env->ExceptionClear(); }
     env->DeleteLocalRef(cls);
 }
 
@@ -52,6 +54,30 @@ static bool isSafeGuestPath(const std::string& p) {
         start = end + 1;
     }
     return true;
+}
+
+void FsProvider::noteFailure(const std::string& p) const {
+    std::lock_guard<std::mutex> lk(failM_);
+    lastFailure_ = p;
+}
+
+std::string FsProvider::lastFailure() const {
+    std::lock_guard<std::mutex> lk(failM_);
+    return lastFailure_;
+}
+
+void FsProvider::showBootMessage(const std::string& msg) const {
+    if (msg.empty() || !bridgeClass_ || !bootMsgMethod_) return;
+    bool attached = false;
+    JNIEnv* env = attachEnv(attached);
+    if (!env) return;
+    jstring jmsg = env->NewStringUTF(msg.c_str());
+    if (jmsg) {
+        env->CallStaticVoidMethod(bridgeClass_, bootMsgMethod_, jmsg);
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(jmsg);
+    }
+    if (attached) jvm_->DetachCurrentThread();
 }
 
 bool FsProvider::resolvePath(const std::string& guestPath, std::string& out) const {
@@ -165,6 +191,7 @@ bool FsProvider::readFile(const std::string& guestPath, std::vector<uint8_t>& ou
     if (!assetsUri_.empty() && copyFromSaf(guestPath) &&
         resolvePath(guestPath, path) && readLocal(path, out, maxBytes)) return true;
 
+    noteFailure(guestPath);
     return false;
 }
 
@@ -230,6 +257,7 @@ int FsProvider::openFileFd(const std::string& guestPath, uint64_t& sizeOut) cons
             }
         }
     }
+    noteFailure(guestPath);
     return -1;
 }
 
