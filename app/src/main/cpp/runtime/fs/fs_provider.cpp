@@ -2,6 +2,7 @@
 #include "fs_provider.h"
 
 #include <android/log.h>
+#include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -231,11 +232,32 @@ bool FsProvider::writeFile(const std::string& guestPath, const std::vector<uint8
 
 // Abre a ISO 1× (lazy, thread-safe): fd do URI persistido via Java + parse
 // GDFX. O fd permanece aberto — I/O aleatório dos arquivos do jogo via pread.
+// Modo host (harness): localIsoPath_ abre por caminho de arquivo direto.
 XisoImage* FsProvider::ensureIso() const {
     std::lock_guard<std::mutex> lk(isoM_);
     if (iso_) return iso_.get();
     if (isoTried_) return nullptr;
     isoTried_ = true;
+
+    // (0) MODO HOST: caminho local de arquivo (desktop/harness) — o mesmo
+    // XisoImage + pread; zero diferença semântica para o guest.
+    if (!localIsoPath_.empty()) {
+        const int fd = ::open(localIsoPath_.c_str(), O_RDONLY);
+        if (fd < 0) {
+            FLOGE("ISO: open(%s) falhou (errno=%d)", localIsoPath_.c_str(), errno);
+            return nullptr;
+        }
+        auto img = std::make_unique<XisoImage>();
+        if (!img->open(fd)) {
+            FLOGE("ISO: imagem inválida (sem partição GDFX/XDVDFS)");
+            return nullptr;
+        }
+        iso_ = std::move(img);
+        FLOG("ISO: origem do jogo ativa (%llu bytes, caminho local, zero cópia)",
+             (unsigned long long)iso_->totalSize());
+        return iso_.get();
+    }
+
     if (assetsUri_.empty() || !openSafUriMethod_ || !bridgeClass_) {
         FLOGE("ISO: URI/callback ausentes — leitura da imagem indisponível");
         return nullptr;
@@ -365,6 +387,18 @@ int FsProvider::openLocalWriteFd(const std::string& guestPath) const {
         if (path[pos] == '/') mkdir(path.substr(0, pos).c_str(), 0755);
     }
     return open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+}
+
+int FsProvider::openLocalReadWriteFd(const std::string& guestPath) const {
+    if (!isSafeGuestPath(guestPath)) return -1;
+    std::string path;
+    if (!resolvePath(guestPath, path)) return -1;
+    for (size_t pos = filesDir_.size() + 1; pos < path.size(); ++pos) {
+        if (path[pos] == '/') mkdir(path.substr(0, pos).c_str(), 0755);
+    }
+    // SEM O_TRUNC: dispositivos de bloco persistentes preservam o conteúdo
+    // entre relaunches e execuções do app (o HD do console faz o mesmo).
+    return open(path.c_str(), O_RDWR | O_CREAT, 0644);
 }
 
 } // namespace fh2::fs

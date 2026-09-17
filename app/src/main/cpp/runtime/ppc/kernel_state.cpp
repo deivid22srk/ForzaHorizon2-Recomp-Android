@@ -555,7 +555,10 @@ void setLaunchData(const uint8_t* data, uint32_t size) {
         g_launchData.clear();
         return;
     }
-    if (size > 512) size = 512; // XAM_LAUNCH_DATA real: 512 bytes
+    // Sem clamp: o FH2 seta 1020 bytes no relaunch do launcher (medido no
+    // recomp) e o boot 2 só prossegue se os dados chegarem INTEIROS. O clamp
+    // antigo de 512 bytes corrompia o mecanismo de relaunch (boot 2 == boot 1
+    // → loop). Xenia também não clampa (launch_data.resize(size)).
     g_launchData.assign(data, data + size);
 }
 
@@ -818,6 +821,35 @@ uint32_t fileOpenRawDevice(const std::string& display, uint64_t sizeBytes,
             f->size = realSize;
         }
     }
+    GuestFile* p = f.get();
+    uint32_t h;
+    {
+        std::lock_guard<std::mutex> lk(g_stateM);
+        h = g_nextFileHandle += 4;
+        g_files[h] = std::move(f);
+    }
+    *out = p;
+    return h;
+}
+
+uint32_t fileOpenBlockDevice(const std::string& display,
+                             const std::string& backingRel,
+                             uint64_t sizeBytes, GuestFile** out) {
+    *out = nullptr;
+    if (!g_fsBridge) return 0;
+    // backing file REAL e persistente (filesDir/xbox_storage/…): O_RDWR sem
+    // O_TRUNC — o conteúdo sobrevive a relaunches e reinícios do app, como
+    // as partições do HD do console.
+    const int fd = g_fsBridge->openLocalReadWriteFd(backingRel);
+    if (fd < 0) return 0;
+    auto f = std::make_unique<GuestFile>();
+    f->path = backingRel;
+    f->display = display;
+    f->fd = fd;
+    f->size = sizeBytes;
+    f->baseOffset = 0;
+    f->write = true;       // dispositivo de blocos: leitura E escrita
+    f->rawDevice = true;   // roteia para o caminho de dispositivo de blocos
     GuestFile* p = f.get();
     uint32_t h;
     {

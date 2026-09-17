@@ -21,6 +21,7 @@
 #if FH2_HAS_RECOMP
 
 #include <android/log.h>
+#include "ppc_context.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1627,16 +1628,39 @@ void real_XexGetModuleSection(PPCContext& ctx, uint8_t* base) {
 
 // ------------------------------------------------- XamLoader (loader XAM)
 
+namespace {
+
+// XAM launch data: buffer do kernel. O FH2 seta 1020 bytes de launch data no
+// relaunch do launcher (medido no código recompilado: li r4,1020) — o clamp
+// antigo de 512 CORROMPIA o mecanismo de relaunch (boot 2 nunca via os dados).
+// Xenia não clampa (loader_data.launch_data.resize(size)); 4096 cobre o uso
+// real do console com folga.
+constexpr uint32_t kXamLaunchDataMax = 4096;
+
+} // namespace
+
 void real_XamLoaderSetLaunchData(PPCContext& ctx, uint8_t* base) {
     // (PVOID lpBuffer, DWORD cbSize) — guarda os dados de launch do título.
     const uint64_t data = ctx.r3.u64;
-    uint32_t size = ctx.r4.u32;
-    if (size > 512) size = 512; // XAM_LAUNCH_DATA real: 512 bytes
+    const uint32_t size = ctx.r4.u32;
+    if (size > kXamLaunchDataMax) {
+        RLOG("XamLoaderSetLaunchData(data=%08llX, size=%u) = INVALID_PARAMETER "
+             "(> %u)", (unsigned long long)data, size, kXamLaunchDataMax);
+        ctx.r3.u32 = STATUS_INVALID_PARAMETER;
+        return;
+    }
     if (size && !validGuest(data, size)) {
+        RLOG("XamLoaderSetLaunchData(data=%08llX, size=%u) = INVALID_PARAMETER "
+             "(ponteiro guest inválido)", (unsigned long long)data, size);
         ctx.r3.u32 = STATUS_INVALID_PARAMETER;
         return;
     }
     setLaunchData(size ? base + data : nullptr, size);
+    // Boot-critical: o relaunch do FH2 depende destes dados serem preservados
+    // (o boot 2 lê GetLaunchDataSize/GetLaunchData e segue o boot real).
+    RLOG("XamLoaderSetLaunchData(data=%08llX, size=%u) = SUCCESS — dados de "
+         "launch preservados p/ o próximo boot",
+         (unsigned long long)data, size);
     ctx.r3.u32 = 0; // ERROR_SUCCESS
 }
 
@@ -1644,9 +1668,12 @@ void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
     // (PVOID lpBuffer, DWORD cbSize) — copia os dados de launch (se houver).
     const uint64_t buf = ctx.r3.u64;
     const uint32_t bufLen = ctx.r4.u32;
-    uint8_t tmp[512];
+    uint8_t tmp[kXamLaunchDataMax];
     const uint32_t size = getLaunchData(tmp, sizeof(tmp));
     if (size == 0) {
+        // Boot frio (sem launch data) — o título trata como boot inicial.
+        RLOG("XamLoaderGetLaunchData(buf=%08llX, len=%u) = NOT_FOUND (boot "
+             "frio)", (unsigned long long)buf, bufLen);
         ctx.r3.u32 = 0x80070490u; // ERROR_NOT_FOUND (boot frio — real)
         return;
     }
@@ -1657,6 +1684,8 @@ void real_XamLoaderGetLaunchData(PPCContext& ctx, uint8_t* base) {
     // copia min(size, bufLen) — como o kernel real
     const uint32_t copy = size < bufLen ? size : bufLen;
     if (copy) memcpy(base + buf, tmp, copy);
+    RLOG("XamLoaderGetLaunchData(buf=%08llX, len=%u) = SUCCESS (%u bytes)",
+         (unsigned long long)buf, bufLen, copy);
     ctx.r3.u32 = 0; // ERROR_SUCCESS
 }
 
@@ -1665,6 +1694,8 @@ void real_XamLoaderGetLaunchDataSize(PPCContext& ctx, uint8_t* base) {
     // ERROR_NOT_FOUND (o título distingue boot frio de relaunch com dados).
     const uint32_t size = getLaunchDataSize();
     if (validGuest(ctx.r3.u64, 4)) w32(base, ctx.r3.u64, size);
+    RLOG("XamLoaderGetLaunchDataSize(*size=%u) = %s", size,
+         size ? "SUCCESS" : "NOT_FOUND");
     ctx.r3.u32 = size ? 0 : 0x80070490u; // ERROR_SUCCESS : ERROR_NOT_FOUND
 }
 
@@ -1674,8 +1705,11 @@ void real_XamLoaderLaunchTitle(PPCContext& ctx, uint8_t* base) {
     // O runtime (PpcRuntime::run) faz o relaunch com estado zerado.
     const std::string path = readGuestCString(ctx.r3.u64, 512);
     const uint32_t flags = ctx.r4.u32;
-    RLOG("XamLoaderLaunchTitle(\"%s\", flags=0x%08X) — encerrando título p/ "
-         "relançar (não retorna)", path.c_str(), flags);
+    // Diagnóstico do relaunch: o launcher passa path NULL quando o padrão
+    // interno casa (wrapper 0x82BF0870 faz li r3,0). Mostrar o estado real.
+    RLOG("XamLoaderLaunchTitle(r3=%08llX \"%s\", flags=0x%08X) — encerrando "
+         "título p/ relançar (não retorna)",
+         (unsigned long long)ctx.r3.u64, path.c_str(), flags);
     requestTitleRelaunch(path, flags);
     jmp_buf* env = unwindTarget();
     if (env) longjmp(*env, 2); // unwind da thread chamadora — sem retorno
@@ -1900,22 +1934,36 @@ static std::string pathFromObjectAttributes(uint8_t* base, uint64_t objAttr,
 }
 
 // Dispositivos de bloco do console — nomes NT canônicos (case-insensitive).
-// O FH2 abre \Device\Harddisk0\Partition0 (o disco) com o privilégio 23
-// (leitura bruta de setores) para a verificação/estrutura da mídia.
-static bool isRawDiscDevice(const std::string& raw) {
-    const char* kDevs[] = {R"(\Device\Harddisk0\Partition0)",
-                           R"(\Device\Cdrom0)"};
-    for (const char* dev : kDevs) {
-        const size_t n = strlen(dev);
-        if (raw.size() >= n && strncasecmp(raw.c_str(), dev, n) == 0) {
-            return true;
-        }
-    }
-    return false;
+//   • \Device\Harddisk0\Partition0: o HD INTERNO do console — o título
+//     formata/escreve a área de utilidade nele (XMountUtilityDrive);
+//   • \Device\Cdrom0: o DISCO (imagem do usuário, leitura apenas).
+static bool isHddPartition(const std::string& raw) {
+    static const char kDev[] = R"(\Device\Harddisk0\Partition0)";
+    const size_t n = strlen(kDev);
+    return raw.size() >= n && strncasecmp(raw.c_str(), kDev, n) == 0;
+}
+
+static bool isCdromDevice(const std::string& raw) {
+    static const char kDev[] = R"(\Device\Cdrom0)";
+    const size_t n = strlen(kDev);
+    return raw.size() >= n && strncasecmp(raw.c_str(), kDev, n) == 0;
 }
 
 // Tamanho do disco virtual (DVD5 1-camada: 2.299.540 setores de 2048 B).
 constexpr uint64_t kRawDiscSize = 2299540ull * 2048ull;
+
+// Partição do HD acessível ao título: 256 MB de backing file (sparse no
+// host) cobrem com folga a área de utilidade (0xFF000) e o cache do título.
+constexpr uint64_t kHddPartitionSize = 0x10000000ull;
+
+// Geometria REAL da partição utilitária (cache) do console: 0xFF000 bytes,
+// setores de 512 — os valores que o XMountUtilityDrive do XAM espera e
+// valida (o jogo confere: setores>0, bytes/sector==512). Referência: kernel
+// do Xenia (xboxkrnl_io.cc — X_IOCTL_DISK_GET_*).
+static constexpr uint32_t kCachePartitionSize = 0xFF000u;
+static constexpr uint32_t kCacheSectorSize = 512u;
+static constexpr uint32_t k_IOCTL_DISK_GET_DRIVE_GEOMETRY = 0x00070000u;
+static constexpr uint32_t k_IOCTL_DISK_GET_PARTITION_INFO = 0x00074004u;
 
 // Partições de CACHE do HD interno (Cache0/Cache1): scratch gravável que o
 // título usa p/ dados temporários. Sem HD (Arcade) elas NÃO existem no
@@ -1954,10 +2002,26 @@ static std::string cachePartitionPath(const std::string& raw) {
 // (RootDirectory) ancoram no caminho deste objeto — semântica real do
 // Object Manager. 'rel' vazio com display não-vazio = raiz de volume.
 static bool trySpecialOpen(const std::string& raw, const std::string& rel,
-                           uint32_t* outHandle, std::string* outErr) {
+                           bool write, uint32_t* outHandle,
+                           std::string* outErr) {
     *outHandle = 0;
     GuestFile* f = nullptr;
-    if (isRawDiscDevice(raw)) {
+    if (isHddPartition(raw)) {
+        // \Device\Harddisk0\Partition0 = HD INTERNO do console (NÃO o
+        // disco): o título formata e usa a área de utilidade nele
+        // (XMountUtilityDrive — geometria 0xFF000 respondida no IOCTL).
+        // Backing file REAL e persistente no storage do app.
+        *outHandle = fileOpenBlockDevice(raw, "xbox_storage/hdd0.bin",
+                                         kHddPartitionSize, &f);
+        if (*outHandle) {
+            RLOG("Nt*(HD interno) = 0x%08X (backing file persistente)",
+                 *outHandle);
+            return true;
+        }
+        *outErr = "hdd partition";
+        return false;
+    }
+    if (isCdromDevice(raw)) {
         *outHandle = fileOpenRawDevice(raw, kRawDiscSize, &f);
         if (*outHandle) {
             RLOG("Nt*(raw disc device) = 0x%08X "
@@ -1969,10 +2033,37 @@ static bool trySpecialOpen(const std::string& raw, const std::string& rel,
         return false;
     }
     if (isCachePartition(raw)) {
+        // dispositivo BRUTO da partição (sem componente filho): block device
+        // com backing persistente — o título formata estruturas nele
+        static const char* kCacheDevs[] = {"\\Device\\Harddisk0\\Cache0",
+                                           "\\Device\\Harddisk0\\Cache1"};
+        for (int i = 0; i < 2; ++i) {
+            const size_t n = strlen(kCacheDevs[i]);
+            if (raw.size() == n && strncasecmp(raw.c_str(), kCacheDevs[i], n) == 0) {
+                const std::string backing =
+                    std::string("xbox_storage/cache") + char('0' + i) + ".img";
+                *outHandle = fileOpenBlockDevice(raw, backing,
+                                                 kCachePartitionSize, &f);
+                if (*outHandle) {
+                    RLOG("Nt*(cache%d device) = 0x%08X (backing persistente)",
+                         i, *outHandle);
+                    return true;
+                }
+                *outErr = "cache device";
+                return false;
+            }
+        }
         const std::string local = cachePartitionPath(raw);
         // a raiz da partição vira handle de diretório com caminho local
         // ("cache0/…") — filhos relativos ancoram nele
         const bool isRoot = !local.empty() && local.back() == '/';
+        if (!isRoot) {
+            // ARQUIVO real sob a partição de cache (ex.: cache:\media.zip):
+            // cria/lê no storage local do app — persistente entre relaunches
+            GuestFile* g = nullptr;
+            *outHandle = fileOpen(local, raw, write, &g);
+            if (*outHandle) return true;
+        }
         *outHandle = fileOpenDir(isRoot ? local.substr(0, local.size() - 1)
                                         : local, raw, &f);
         if (*outHandle) {
@@ -2013,7 +2104,7 @@ void real_NtCreateFile(PPCContext& ctx, uint8_t* base) {
     {
         uint32_t h = 0;
         std::string err;
-        if (trySpecialOpen(display, rel, &h, &err)) handle = h;
+        if (trySpecialOpen(display, rel, write, &h, &err)) handle = h;
     }
     if (!handle && !rel.empty()) {
         GuestFile* f = nullptr;
@@ -2066,7 +2157,7 @@ void real_NtOpenFile(PPCContext& ctx, uint8_t* base) {
     {
         uint32_t h = 0;
         std::string err;
-        if (trySpecialOpen(display, rel, &h, &err)) handle = h;
+        if (trySpecialOpen(display, rel, write, &h, &err)) handle = h;
     }
     if (!handle && !rel.empty()) {
         GuestFile* f = nullptr;
@@ -2135,7 +2226,9 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
     //     zeros no restante (área não presente num dump de arquivos). Cada
     //     leitura é logada: o padrão do título mostra o que falta servir.
     if (f->rawDevice) {
-        // MODO ISO: fd REAL da imagem — bytes REAIS do disco via pread.
+        // MODO ISO / BACKING FILE: fd real — bytes reais do disco ou da
+        // partição persistente via pread. Regiões nunca escritas do backing
+        // (setores além do EOF) leem ZEROS — semântica de disco real.
         if (f->fd >= 0) {
             uint32_t done = 0;
             if (length > 0 && off < f->size) {
@@ -2146,6 +2239,7 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
                               (off_t)(off + done));
                 } while (n > 0 && (done += (uint32_t)n) < want);
                 done = (uint32_t)std::min<uint64_t>(done, want);
+                if (done < want) memset(base + buffer + done, 0, want - done);
                 f->pos = off + done;
             }
             w32(base, pIoStatus, 0);
@@ -2377,6 +2471,13 @@ void real_NtWriteFile(PPCContext& ctx, uint8_t* base) {
             n = pwrite(f->fd, base + buffer + done, length - done,
                        (off_t)(off + done));
         } while (n > 0 && (done += (uint32_t)n) < length);
+        if (n < 0 && done == 0) {
+            // ENOSPC/EIO: o disco do host está cheio — condição REAL que o
+            // título trata (o console a reporta igualmente)
+            w32(base, pIoStatus, 0xC000007Fu); // STATUS_DISK_FULL
+            ctx.r3.u32 = 0xC000007Fu;
+            return;
+        }
         if (off + done > f->size) f->size = off + done;
         f->pos = off + done;
     }
@@ -2447,6 +2548,14 @@ void traceReturn(const char* name, const PPCContext& ctx) {
         for (int i = 1; i < 6; ++i) a[i] = 0;
     }
     const uint64_t ret = ctx.r3.u64;
+
+    // Filtro do ring: Rtl{Enter,Leave}CriticalSection dominam o traço (a
+    // thread principal gira nelas enquanto o launcher trabalha) e escondem a
+    // cauda útil. Seguem no log vivo (throttle); não entram no ring/dump.
+    if (name && (strcmp(name, "RtlEnterCriticalSection") == 0 ||
+                 strcmp(name, "RtlLeaveCriticalSection") == 0)) {
+        return;
+    }
 
     TraceState& s = traceState();
     TraceEntry e;
@@ -2982,11 +3091,18 @@ void real_NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base) {
     const uint32_t handle = ctx.r3.u32;
     const uint64_t pIoStatus = ctx.r7.u64;
     const uint32_t code = ctx.r8.u32;
+    // ABI Xenon: args 9/10 vão no PARAMETER AREA do chamador — o guest grava
+    // em [r1+84] (OutputBuffer) e [r1+92] (OutputLength) antes do bl (visto
+    // nos call sites gerados: stw r8,84(r1) / stw r11,92(r1)). Slots de 8
+    // bytes como no console; valores de 32 bits nos 4 bytes baixos.
+    const uint64_t outBuf = g32(base, ctx.r1.u32 + 84);
+    const uint32_t outLen = g32(base, ctx.r1.u32 + 92);
     GuestFile* f = fileGet(handle);
     static Throttle t;
     if (t.shouldLog(8, 256)) {
-        RLOG("NtDeviceIoControlFile(handle=0x%08X %s code=0x%08X)",
-             handle, f ? f->display.c_str() : "?", code);
+        RLOG("NtDeviceIoControlFile(handle=0x%08X %s code=0x%08X out=%08llX "
+             "len=%u)", handle, f ? f->display.c_str() : "?", code,
+             (unsigned long long)outBuf, outLen);
     }
     if (!f || !validGuest(pIoStatus, 8)) {
         ctx.r3.u32 = STATUS_INVALID_HANDLE;
@@ -2994,12 +3110,32 @@ void real_NtDeviceIoControlFile(PPCContext& ctx, uint8_t* base) {
     }
     if (f->dir || f->rawDevice) {
         // Cache0/Cache1 e o disco virtual: device control de PARTIÇÃO.
-        // Estado real deste runtime: cache VAZIO (nenhum elemento gravado
-        // ainda) — códigos de contagem devolvem 0 honesto. Códigos
-        // desconhecidos: o console devolveria STATUS_INVALID_DEVICE_REQUEST.
-        w32(base, pIoStatus, 0);
-        w32(base, pIoStatus + 4, 0);
-        ctx.r3.u32 = STATUS_SUCCESS;
+        w32(base, pIoStatus, 0);        // Status = SUCCESS
+        if (code == k_IOCTL_DISK_GET_DRIVE_GEOMETRY) {
+            // XMountUtilityDrive: out = {setores, bytes por setor}
+            if (outLen >= 8 && validGuest(outBuf, 8)) {
+                w32(base, outBuf, kCachePartitionSize / kCacheSectorSize);
+                w32(base, outBuf + 4, kCacheSectorSize);
+                w32(base, pIoStatus + 4, 8); // Information = bytes escritos
+            }
+            ctx.r3.u32 = STATUS_SUCCESS;
+            return;
+        }
+        if (code == k_IOCTL_DISK_GET_PARTITION_INFO) {
+            // XMountUtilityDrive: out = {início(8B)=0, tamanho(8B)=0xFF000}
+            if (outLen >= 0x10 && validGuest(outBuf, 0x10)) {
+                w32(base, outBuf, 0);
+                w32(base, outBuf + 4, 0);
+                w32(base, outBuf + 8, kCachePartitionSize);
+                w32(base, outBuf + 12, 0);
+                w32(base, pIoStatus + 4, 0x10);
+            }
+            ctx.r3.u32 = STATUS_SUCCESS;
+            return;
+        }
+        // Código desconhecido em partição: request inválido (console real)
+        w32(base, pIoStatus, 0xC0000002u);
+        ctx.r3.u32 = 0xC0000002u; // STATUS_INVALID_DEVICE_REQUEST
         return;
     }
     w32(base, pIoStatus, 0xC0000002u); // STATUS_INVALID_DEVICE_REQUEST

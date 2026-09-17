@@ -36,6 +36,11 @@ public:
     /** Configura o diretório de arquivos do app (getFilesDir via JNI). */
     void setFilesDir(const std::string& path) { filesDir_ = path; }
 
+    /** Modo host (harness de desktop): abre a ISO por caminho de arquivo
+     *  local em vez do URI SAF. Mantém a MESMA árvore GDFX e o MESMO
+     *  pipeline de leitura (pread no fd) — nenhuma diferença semântica. */
+    void setLocalIsoPath(const std::string& path) { localIsoPath_ = path; }
+
     /** Inicializa JavaVM refs para os callbacks SAF (fd direto + fallback). */
     void initialize(JNIEnv* env);
 
@@ -74,6 +79,11 @@ public:
      *  pelo NtWriteFile (saves). -1 se o caminho não for seguro. */
     int openLocalWriteFd(const std::string& guestPath) const;
 
+    /** Abre arquivo LOCAL (filesDir) para LEITURA+ESCRITA sem truncar —
+     *  usado pelos dispositivos de bloco persistentes (partições de cache
+     *  / HD do console mapeados em arquivos reais no storage do app). */
+    int openLocalReadWriteFd(const std::string& guestPath) const;
+
     const std::string& filesDir() const { return filesDir_; }
 
     /** Último caminho cuja leitura falhou (todas as origens) — diagnóstico
@@ -98,6 +108,7 @@ private:
     std::string assetsUri_;       // content:// URI SAF (árvore OU arquivo ISO)
     bool assetsIsIso_ = false;    // true = URI é um arquivo .iso selecionado
     std::string filesDir_;        // app-specific storage (escrita + fallback)
+    std::string localIsoPath_;    // modo host: caminho da ISO no filesystem
     JavaVM* jvm_ = nullptr;       // para anexar a thread do guest no callback
     jclass bridgeClass_ = nullptr;    // GlobalRef de NativeBridge
     jmethodID openSafMethod_ = nullptr; // openSaf(String)I — fd direto

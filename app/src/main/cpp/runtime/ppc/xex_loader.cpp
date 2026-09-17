@@ -278,6 +278,53 @@ std::map<uint32_t, uint32_t> parseExportTable(uint8_t* imageHost,
     return out;
 }
 
+/** Resolve as exports do módulo pela TABELA XEX2 NATIVA (xex2_export_table)
+ *  — a estrutura que o kernel do console realmente usa. O VA da tabela vem
+ *  do CAMPO export_table do SECURITY HEADER do XEX (offset 0x160, plaintext
+ *  no arquivo), e a tabela vive DENTRO da imagem decodificada:
+ *    imagebaseaddr (+0x20, <<16) | count (+0x24) | base (+0x28) |
+ *    ordOffset[] (+0x2C)   →   VA(i) = ordOffset[i] + (imagebaseaddr << 16)
+ *  O XMediaFacade/SpeechFacade exportam assim (14 e N ordinais); o PE .edata
+ *  deles é uma área zero no span (RVA 0x2B0000 > conteúdo 0x288000) — por
+ *  isso exports=0 estava errado. Os VAs caem na faixa de código RECOMPILADO
+ *  do módulo (despachados pela tabela extra — fh2_funcSlot), então a chamada
+ *  do título executa código real do facade, nunca um stub. */
+std::map<uint32_t, uint32_t> parseXex2ExportTable(
+        const uint8_t* fileData, size_t fileSize,
+        const uint8_t* imageHost, uint32_t contentBytes) {
+    std::map<uint32_t, uint32_t> out;
+    if (!fileData || fileSize < 0x98 + 0x164) return out;
+    const auto* header = reinterpret_cast<const Xex2Header*>(fileData);
+    const auto* security =
+        reinterpret_cast<const Xex2SecurityInfo*>(fileData +
+                                                  header->securityOffset);
+    // export_table e load_address são big-endian nos bytes PLAINTEXT do
+    // security header (só os dados após header.size são cifrados)
+    const uint32_t exportTableVa = security->exportTable;
+    const uint32_t loadAddress = security->loadAddress;
+    if (exportTableVa == 0 || exportTableVa < loadAddress) return out;
+    const uint64_t off = (uint64_t)exportTableVa - loadAddress;
+    if (off + 0x2C > contentBytes) return out;
+
+    auto rdBE = [&imageHost](uint64_t o) {
+        return (uint32_t(imageHost[o]) << 24) |
+               (uint32_t(imageHost[o + 1]) << 16) |
+               (uint32_t(imageHost[o + 2]) << 8) | uint32_t(imageHost[o + 3]);
+    };
+    const uint32_t imagebaseaddr = rdBE(off + 0x20);
+    const uint32_t count = rdBE(off + 0x24);
+    const uint32_t base = rdBE(off + 0x28);
+    if (count == 0 || count > 0x10000) return out;
+    if (off + 0x2C + (uint64_t)count * 4 > contentBytes) return out;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t ordOffset = rdBE(off + 0x2C + (uint64_t)i * 4);
+        const uint32_t va = ordOffset + (imagebaseaddr << 16);
+        if (va == 0) continue;
+        out[base + i] = va;
+    }
+    return out;
+}
+
 } // namespace
 
 /** Tamanho REAL do conteúdo decodificável do XEX (o que existe de bytes no
@@ -403,15 +450,16 @@ uint32_t loadSecondaryModule(fs::FsProvider& fs, const std::string& relPath,
     g_moduleRegionNext = placed + spanBytes;
     const uint32_t moduleVa = (uint32_t)placed;
 
-    // 6) exports REAIS via PE EXPORT DIRECTORY do módulo decodificado — a
-    //    mesma estrutura que o kernel do console caminha em
-    //    XexGetProcedureAddress. O XMediaFacade/SpeechFacade exportam a API
-    //    XMedia/XMV por AQUI (DataDirectory[0] do PE), não por um header XEX.
-    auto exports = parseExportTable(image.data.get(), (uint32_t)image.size,
-                                    moduleVa);
-
-    // 7) registro no kernel como módulo SECUNDÁRIO (descarregado no relaunch)
-    std::map<uint32_t, uint32_t> expMap = exports;
+    // 6) exports REAIS: (a) TABELA XEX2 NATIVA do security header — a
+    //    estrutura que o console caminha em XexGetProcedureAddress (o
+    //    XMediaFacade/SpeechFacade exportam 14/N ordinais por aqui); (b) PE
+    //    EXPORT DIRECTORY — complemento para módulos que exportam só por PE.
+    std::map<uint32_t, uint32_t> expMap = parseXex2ExportTable(
+        fileData.data(), fileData.size(), image.data.get(), contentBytes);
+    for (auto& [ord, va] : parseExportTable(image.data.get(),
+                                            (uint32_t)image.size, moduleVa)) {
+        expMap[ord] = va;
+    }
     const uint32_t handle =
         fh2::kern::registerModule(displayName, 0, expMap);
     fh2::kern::markModuleSecondary(handle, moduleVa, (uint32_t)spanBytes);

@@ -127,21 +127,41 @@ void XisoImage::parseTree(uint64_t dirOffsetAbs, uint32_t dirSize,
     std::vector<uint8_t> buf(dirSize);
     if (!readAt(dirOffsetAbs, buf.data(), dirSize)) return;
 
-    // Percorre a árvore binária iterativamente (pilha de ordinais).
+    // Árvore binária XDVDFS — convenção REAL do console (idêntica ao parser
+    // do Xenia, disc_image_device.cc): ordinais ABSOLUTOS em words (×4) do
+    // buffer do diretório, raiz na word 0, visita em-ordem (esq, nó, dir).
+    // Validação por entrada: nome ASCII imprimível 1..255 e arquivo dentro
+    // da imagem — entradas corrompidas são descartadas, não indexadas.
+    const uint32_t dirWords = dirSize / 4;
+
+    auto validName = [](const uint8_t* p, uint8_t len) {
+        if (len == 0 || len > 255) return false;
+        for (uint8_t i = 0; i < len; ++i) {
+            const uint8_t c = p[i];
+            if (c < 0x20 || c > 0x7E) return false;
+        }
+        return true;
+    };
+
     struct Frame {
         uint16_t ordinal;
         const uint8_t* base;
+        std::string prefix;
     };
     std::vector<Frame> stack;
-    stack.push_back({0, buf.data()});
+    std::vector<bool> visited(dirWords, false);
+    stack.push_back({0, buf.data(), prefix});
 
     while (!stack.empty()) {
         const Frame fr = stack.back();
         stack.pop_back();
+        if (fr.ordinal >= dirWords) continue;
+        if (visited[fr.ordinal]) continue;
+        visited[fr.ordinal] = true;
 
         const uint64_t entryOff = (uint64_t)fr.ordinal * 4;
-        if (entryOff + 14 > dirSize) continue;
         const uint8_t* p = fr.base + entryOff;
+        if (entryOff + 14 > dirSize) continue;
 
         const uint16_t nodeL = rdU16(p + 0);
         const uint16_t nodeR = rdU16(p + 2);
@@ -150,34 +170,36 @@ void XisoImage::parseTree(uint64_t dirOffsetAbs, uint32_t dirSize,
         const uint8_t attrs = p[12];
         const uint8_t nameLen = p[13];
         const bool isDir = (attrs & 0x10) != 0;
-        if (nameLen == 0 || entryOff + 14 + nameLen > dirSize) continue;
+        if (!validName(p + 14, nameLen)) continue;
+        if (entryOff + 14 + nameLen > dirSize) continue;
 
-        std::string key = joinKey(prefix, (const char*)p + 14, nameLen);
+        const std::string name((const char*)p + 14, nameLen);
+        const std::string key = joinKey(fr.prefix, name.data(), name.size());
+
         Node node;
         node.dir = isDir;
         node.size = length;
         node.offset = isDir ? 0
                             : gameOffset_ + (uint64_t)sector * kSector;
+        // arquivos de tamanho 0 são REAIS (marcadores do disco) e ficam
+        // indexados; só descarta arquivo cujos dados saem da imagem
         if (!isDir && node.offset + node.size > total_) {
             continue; // entrada fora da imagem — corrompida, ignora
         }
-        files_.emplace(std::move(key), node);
+        if (files_.find(key) == files_.end()) {
+            files_.emplace(std::move(key), node);
+        }
 
         // subdiretório: a árvore filha vive em gameOffset+sector*2048
         if (isDir && length > 0) {
             const uint64_t childAbs = gameOffset_ + (uint64_t)sector * kSector;
-            parseTree(childAbs, length,
-                      prefix.empty()
-                          ? std::string((const char*)p + 14, nameLen)
-                          : prefix + "/" + std::string((const char*)p + 14,
-                                                       nameLen),
-                      depth + 1);
+            parseTree(childAbs, length, key, depth + 1);
         }
 
-        // direita primeiro na pilha = esquerda processada antes (ordem
-        // consistente; a indexação é por chave, a ordem não altera o resultado)
-        if (nodeR != 0) stack.push_back({nodeR, fr.base});
-        if (nodeL != 0) stack.push_back({nodeL, fr.base});
+        // esquerda primeiro na pilha = direita processada antes — a indexação
+        // é por chave (map), a ordem não altera o resultado
+        if (nodeL != 0xFFFF && nodeL != 0) stack.push_back({nodeL, fr.base, fr.prefix});
+        if (nodeR != 0xFFFF && nodeR != 0) stack.push_back({nodeR, fr.base, fr.prefix});
     }
 }
 

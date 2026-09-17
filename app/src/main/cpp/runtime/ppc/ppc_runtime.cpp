@@ -37,6 +37,7 @@
 #include "runtime/gpu/cmd_processor.h"
 #include "runtime/input/input_state.h"
 #include "runtime/ppc/kernel_state.h"
+#include "runtime/ppc/kernel_real.h"
 
 #if FH2_HAS_RECOMP
 #include "ppc_config.h"
@@ -372,6 +373,11 @@ void PpcRuntime::run(gfx::GraphicsBackend* gfx, audio::AudioOutput* audio,
                 !kern::consumeTitleRelaunch(relaunchPath, relaunchFlags)) {
                 break;
             }
+            // Diagnóstico do relaunch: as últimas chamadas HLE mostram o que
+            // o launcher tentou antes de desistir (arquivo ausente, export
+            // não resolvido, mount de cache falho — a causa fica visível no
+            // logcat sem precisar de recompile com trace completo).
+            kern::traceDump("XamLoaderLaunchTitle — último relaunch");
             // Reset REAL do estado do título (threads já finalizadas pelo
             // runGuestMain; heap/janelas/waitables/TLS zerados) + imagem
             // restaurada ao estado de boot frio.

@@ -365,6 +365,13 @@ uint32_t fileOpenDir(const std::string& guestPath, const std::string& display,
 /** Registra o handle do DISPOSITIVO de blocos do disco (Partition0). */
 uint32_t fileOpenRawDevice(const std::string& display, uint64_t sizeBytes,
                            GuestFile** out);
+/** Abre um DISPOSITIVO DE BLOCOS com backing file REAL e persistente
+ *  (filesDir/xbox_storage/…) — o HD do console: leitura E escrita reais,
+ *  conteúdo preservado entre relaunches (o título formata/utiliza a área
+ *  de utilidade nele — XMountUtilityDrive + media.zip). */
+uint32_t fileOpenBlockDevice(const std::string& display,
+                             const std::string& backingRel,
+                             uint64_t sizeBytes, GuestFile** out);
 /** Resolve handle → objeto (nullptr se inválido). */
 GuestFile* fileGet(uint32_t handle);
 /** Fecha o fd e remove o handle. */
