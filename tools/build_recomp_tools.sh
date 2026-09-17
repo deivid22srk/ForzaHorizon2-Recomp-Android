@@ -30,6 +30,21 @@ grep -q "be<uint32_t> Error;" "$ROOT/tools/XenonRecomp/XenonUtils/xbox.h" && \
 grep -q "uint16_t u16;" "$ROOT/tools/XenonRecomp/XenonUtils/xdbf.h" || \
     sed -i 's/be<uint16_t> u16;/uint16_t u16;/' "$ROOT/tools/XenonRecomp/XenonUtils/xdbf.h" || true
 
+# ---- PATCH fh2: time base do guest a 50 MHz REAIS --------------------------
+# O emissor de mftb do upstream gera `__rdtsc()` — o tick do HOST (cntvct_el0
+# do ARM tem frequência arbitrária do device: 19.2/24/32 MHz…). O título lê o
+# TB do guest e divide pelo valor de KeQueryPerformanceFrequency (50 MHz do
+# Xenon): com tick de host o relógio do guest fica N vezes mais rápido/lento
+# e os timeouts de mídia do jogo estouram (o boot exibia "disco sujo" em ~34 s
+# reais). Patch: mftb → fh2TimeBaseTicks() (50.000.000 ticks/s de tempo real,
+# idêntico ao console), declarada no ppc_context.h COMMITADO em
+# recomp/runtime/ — que o run_recomp.sh passa como headerFilePath e a
+# ferramenta embute no ppc_context.h emitido consumido pelo código gerado.
+if ! grep -q "fh2TimeBaseTicks" "$ROOT/tools/XenonRecomp/XenonRecomp/recompiler.cpp"; then
+    sed -i 's/{}.u64 = __rdtsc();/{}.u64 = fh2TimeBaseTicks();/' \
+        "$ROOT/tools/XenonRecomp/XenonRecomp/recompiler.cpp"
+fi
+
 cmake -S "$ROOT/tools/XenonRecomp" -B "$ROOT/tools/XenonRecomp/build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$ROOT/tools/XenonRecomp/build" -j"$(nproc)" --target XenonAnalyse XenonRecomp
 

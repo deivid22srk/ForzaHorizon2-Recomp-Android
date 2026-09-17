@@ -792,4 +792,20 @@ inline uint64_t __rdtsc()
 #   error "Missing implementation for __rdtsc()"
 #endif
 
+// fh2: time base do guest — 50.000.000 ticks por segundo de tempo REAL.
+// O emissor de mftb chama isto (patch em tools/build_recomp_tools.sh):
+// 1e9 ns/s ÷ 50.000.000 ticks/s = 20 ns por tick. Consistente com o valor
+// de KeQueryPerformanceFrequency (kernel_real.cpp) — o relógio guest fica
+// idêntico ao do console. O tick do HOST (rdtsc/cntvct_el0) tem frequência
+// arbitrária do device/host e fazia os timers do título rodarem N vezes
+// mais rápido/lento → timeouts de mídia falsos ("disco sujo" no boot).
+#include <chrono>
+inline uint64_t fh2TimeBaseTicks()
+{
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const uint64_t ns = (uint64_t)std::chrono::duration_cast<
+        std::chrono::nanoseconds>(now).count();
+    return ns / 20ull;
+}
+
 #endif

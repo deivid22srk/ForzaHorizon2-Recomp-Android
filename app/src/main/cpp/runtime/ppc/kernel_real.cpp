@@ -491,7 +491,15 @@ void real_KeQuerySystemTime(PPCContext& ctx, uint8_t* base) {
 }
 
 void real_KeQueryPerformanceFrequency(PPCContext& ctx, uint8_t* base) {
-    ctx.r3.u64 = 50000000ull; // 50 MHz do timer Xenon
+    constexpr uint64_t kFreq = 50000000ull; // 50 MHz do timer Xenon
+    // ABI dupla (call sites reais do título usam os dois padrões):
+    //  1. PLARGE_INTEGER em r3 — o kernel escreve *r3 = frequência;
+    //  2. retorno por valor em r3 (LARGE_INTEGER de 8 bytes no register pair).
+    // Antes só o retorno existia — call sites que liam o PONTEIRO recebiam
+    // lixo (frequência errada/0 → divisões de tempo inconsistentes e
+    // timeouts de mídia estourando: caminho do "disco sujo" no boot).
+    if (validGuest(ctx.r3.u64, 8)) w64(base, ctx.r3.u64, kFreq);
+    ctx.r3.u64 = kFreq;
 }
 
 // --------------------------------------------------------------- espera
@@ -2234,8 +2242,9 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
         // (setores além do EOF) leem ZEROS — semântica de disco real.
         if (f->fd >= 0) {
             uint32_t done = 0;
+            uint64_t want = 0;
             if (length > 0 && off < f->size) {
-                const uint64_t want = std::min<uint64_t>(length, f->size - off);
+                want = std::min<uint64_t>(length, f->size - off);
                 ssize_t n;
                 do {
                     n = pread(f->fd, base + buffer + done, want - done,
@@ -2243,7 +2252,14 @@ void real_NtReadFile(PPCContext& ctx, uint8_t* base) {
                 } while (n > 0 && (done += (uint32_t)n) < want);
                 done = (uint32_t)std::min<uint64_t>(done, want);
                 if (done < want) memset(base + buffer + done, 0, want - done);
-                f->pos = off + done;
+                // SEMÂNTICA DE DISCO REAL: setores além do EOF do backing
+                // (arquivo esparso) leem ZEROS — o dispositivo devolve a
+                // quantidade pedida (dentro dos limites), nunca leitura
+                // curta. Antes `done` saía 0 quando o pread batia no EOF do
+                // backing e o IoStatusBlock.Information=0 era interpretado
+                // pelo título como falha de mídia ("disco sujo" no boot).
+                done = (uint32_t)want;
+                f->pos = off + want;
             }
             w32(base, pIoStatus, 0);
             w32(base, pIoStatus + 4, done);

@@ -425,3 +425,46 @@ resolução de volume `game:\` verificada com probe), relaunch XAM do launcher
 (8 ciclos, guarda de loop operando) e `rc=0` SEM nenhum SIGSEGV, incluindo o
 teardown. No device, a falha de módulo secundário ausente (dump incompleto)
 agora produz log explícito em vez de tela preta silenciosa.
+
+## D26 — Relógio do guest a 50 MHz reais + leituras honestas de dispositivo (log7)
+
+**Evidência (log7, moto g34 5G)**: guest executando 3,57M chamadas de kernel;
+o boot monta Cache0/Cache1, consulta IoControl, faz um dilúvio de NtWriteFile
+no cache e então chama `XamShowDirtyDiscErrorUI` → `XamLoaderLaunchTitle`
+(relaunch infinito). A mesma ISO roda perfeitamente no Xenia — a decisão de
+mídia é defeito do runtime, não do dump.
+
+**Engenharia reversa real** (bootimp/callers.py/refs.py sobre o XEX decodificado):
+- `XamShowDirtyDiscErrorUI` (xam.xex ord 0x2D9, thunk 0x832F0EA4) tem UM call
+  site (veneer 0x82BF1E00) chamado pelo monitor 0x82D91248, que dispara
+  DirtyDisc quando a global 0x835926AC == {0xFF,0,0,0}.
+- Escritor: `ReportMediaState` 0x82D914B0 (sob critical section 0x83592690),
+  chamada por 0x82D92198 com constantes (0xFF,0,0,0).
+- Dois call sites disparam o report: (1) 0x824584F0 — `getElapsed()`
+  (0x8247E268: vtable → agora, menos início) comparado a 150.0 (lfd em
+  0x82248680 = constante 150.0); (2) 0x824909E0 — falha de `LoadModule`
+  (0x82BE9020 → XexLoadImage ord 0x199) com retorno 0.
+
+**Causa raiz**: o emissor de mftb do XenonRecomp gera `__rdtsc()` — tick do
+HOST (cntvct_el0 ~19,2 MHz no device) — enquanto o título divide o delta pelo
+valor de KeQueryPerformanceFrequency (50 MHz): relógio guest errado e os
+timeouts de mídia estouram. O título não importa KeQueryInterruptTime nem
+NtQueryPerformanceCounter — seu timing é mftb + KeQueryPerformanceFrequency.
+
+**Correções**:
+1. Patch do emissor (build_recomp_tools.sh): mftb → `fh2TimeBaseTicks()`
+   (ns/20 — exatamente 50.000.000 ticks/s de tempo real), declarada no
+   ppc_context.h commitado (que o run_recomp.sh passa como headerFilePath e a
+   ferramenta embute no output). Cache de ferramentas v3 no CI.
+2. `KeQueryPerformanceFrequency`: escreve no ponteiro r3 E devolve em r3
+   (ABI dupla; call sites que liam o ponteiro recebiam lixo).
+3. `NtReadFile` raw device: leituras dentro do tamanho do dispositivo
+   devolvem a quantidade pedida (zeros além do EOF do backing esparso) —
+   antes Information=0 (leitura curta = falha de mídia para o título).
+4. `NtQueryDirectoryFile`: STATUS_NO_MORE_FILES + Information=0 (diretório
+   vazio real) em vez de STATUS_UNSUCCESSFUL ("FS quebrado").
+
+**Validação**: pipeline regenerado localmente (506 TUs) com mftb →
+fh2TimeBaseTicks confirmado no código emitido; hostcheck verde (runtime +
+amostra de 73 TUs). Próximo bloqueio real do boot será revelado pelo log do
+device após o DirtyDisc deixar de ocorrer.

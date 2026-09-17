@@ -1263,12 +1263,25 @@ void __imp__NtOpenSymbolicLinkObject(PPCContext& ctx, uint8_t* base) {
     fh2::kern::traceReturn("NtOpenSymbolicLinkObject", ctx);
 }
 
-// NtQueryDirectoryFile: falha REAL — FS pendente
+// NtQueryDirectoryFile: semântica REAL para os volumes do runtime (cache:/,
+// HD) — diretório existente e SEM entradas ainda → STATUS_NO_MORE_FILES
+// (0x80000006) com IoStatusBlock.Information = 0, o mesmo que o kernel do
+// console devolve para um diretório vazio. O retorno anterior
+// (STATUS_UNSUCCESSFUL) dizia ao título que o FS estava QUEBRADO e
+// alimentava o caminho de falha de mídia no boot.
 void __imp__NtQueryDirectoryFile(PPCContext& ctx, uint8_t* base) {
-    (void)base;
     fh2::kern::traceCall("NtQueryDirectoryFile", ctx);
-    FH2_HLE_ONCE(NtQueryDirectoryFile, "FS pendente");
-    ctx.r3.u32 = 0xC0000001u;
+    // (HANDLE, EVENT, APC, Ctx, PIO_STATUS, FileInformation, Length, Class,
+    //  ReturnSingleEntry, FileName, RestartScan) — r7 = IoStatusBlock.
+    // EA guest é 32-bit (registradores podem trazer extensão de sinal).
+    const uint64_t pIoStatus = (uint32_t)ctx.r7.u64;
+    const uint64_t memBytes = fh2::kern::guestMemBytes();
+    if (base && pIoStatus != 0 && pIoStatus + 8 <= memBytes) {
+        uint8_t* io = base + pIoStatus;
+        io[0] = 0x80; io[1] = 0x00; io[2] = 0x00; io[3] = 0x06; // Status
+        io[4] = 0x00; io[5] = 0x00; io[6] = 0x00; io[7] = 0x00; // Information
+    }
+    ctx.r3.u32 = 0x80000006u;
     fh2::kern::traceReturn("NtQueryDirectoryFile", ctx);
 }
 
