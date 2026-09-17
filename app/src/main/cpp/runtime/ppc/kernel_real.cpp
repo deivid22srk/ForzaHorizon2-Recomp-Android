@@ -2153,6 +2153,9 @@ void real_NtOpenFile(PPCContext& ctx, uint8_t* base) {
     }
     std::string display;
     std::string rel = pathFromObjectAttributes(base, objAttr, &display);
+    // NtOpenFile não cria: só abre existente (mesmo com FILE_APPEND/etc., a
+    // criação é papel do NtCreateFile com CREATE_ALWAYS/OPEN_ALWAYS)
+    const bool write = false;
     uint32_t handle = 0;
     {
         uint32_t h = 0;
